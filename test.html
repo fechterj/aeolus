@@ -153,7 +153,16 @@ function forecastBody(q){
   return pts.length === 1 ? pts[0] : pts;
 }
 /* the hook index.html looks for: forecasts and place names come from here, everything else is real */
-window.__aeolusTestFetch = (win, realFetch) => (input, opts) => {
+/* a frame can be told to meet a failing forecast service: "minutely", "hourly", "daily" (rate limits) or "broken" */
+const faults = new Map(); let nextFault = null;
+window.__aeolusTestFetch = (win, realFetch) => {
+  if (nextFault){ faults.set(win, nextFault); nextFault = null; }
+  return serveFor(win, realFetch);
+};
+const LIMIT_REASON = { minutely: "Minutely API request limit exceeded. Please try again in one minute.",
+  hourly: "Hourly API request limit exceeded. Please try again in the next hour.",
+  daily: "Daily API request limit exceeded. Please try again tomorrow." };
+const serveFor = (win, realFetch) => (input, opts) => {
   const url = String(input && input.url || input);
   let u; try { u = new URL(url, win.location.href); } catch { return realFetch(input, opts); }
   const reply = body => new Promise((res, rej) => setTimeout(() => {
@@ -163,6 +172,12 @@ window.__aeolusTestFetch = (win, realFetch) => (input, opts) => {
   if (u.hostname === "api.open-meteo.com" && seed){
     const kind = u.searchParams.get("current") ? "point" : ((u.searchParams.get("latitude") || "").includes(",") ? "grid" : "point");
     netLog.push({ win, kind, url });
+    const fault = faults.get(win);
+    if (fault && kind === "grid"){
+      if (fault === "broken") return reply([{ latitude: 0, longitude: 0, hourly: { time: [1] } }]);   // a short, half-empty answer
+      return new Promise(res => setTimeout(() => res(new win.Response(JSON.stringify({ error: true, reason: LIMIT_REASON[fault] }),
+        { status: 429, headers: { "Content-Type": "application/json" } })), 15));
+    }
     return reply(forecastBody(u.searchParams));
   }
   if (u.hostname === "api.bigdatacloud.net"){
@@ -173,7 +188,8 @@ window.__aeolusTestFetch = (win, realFetch) => (input, opts) => {
   return realFetch(input, opts);
 };
 
-async function open(w, h, hash){
+async function open(w, h, hash, fault){
+  nextFault = fault || null;
   stage.textContent = "";
   const f = document.createElement("iframe");
   f.width = w; f.height = h; f.src = "index.html?test=" + Date.now() + (hash || "");
@@ -364,6 +380,110 @@ async function sizeTests(label, w, h, wantMobile){
   return p;
 }
 
+/* ---------- time, links and dialogs ---------- */
+function idbCount(db, store){                 // read-only: never creates the database
+  return new Promise(res => {
+    let rq; try { rq = indexedDB.open(db); } catch { return res(null); }
+    rq.onupgradeneeded = () => rq.transaction.abort();
+    rq.onerror = () => res(0);
+    rq.onsuccess = () => { const d = rq.result; try { const c = d.transaction(store).objectStore(store).count(); c.onsuccess = () => { res(c.result); d.close(); }; c.onerror = () => { res(null); d.close(); }; } catch { d.close(); res(0); } };
+  });
+}
+async function stateTests(){
+  section("Time, links and dialogs");
+  const p = await open(375, 812), a = p.win.aeolus;
+  if (!(await until(() => a.ready, 8000))){ skip("time and link checks", "no forecast"); return; }
+  const play = p.$("#play"), paused = () => play.getAttribute("aria-label") === "Play forecast time";
+  const hasT = () => /[#&]t=/.test(a.link);
+
+  play.click(); await sleep(300); p.$("#nowbtn").click();
+  ok(paused() && !hasT(), "NOW stops playback and the link goes back to \"now\"", (paused() ? "paused" : "still playing") + ", " + a.link);
+
+  const sl = p.$("#slider"); sl.value = String(10 + 8 / 60); sl.dispatchEvent(new p.win.Event("input", { bubbles: true }));
+  const labelMin = (p.$("#timelabel").textContent.match(/(\d\d):(\d\d) UTC/) || [])[2], linkMin = (a.link.match(/t=\d{4}-\d\d-\d\dT\d\d:(\d\d)Z/) || [])[1];
+  ok(!!labelMin && labelMin === linkMin, "the link carries the time the label shows", "label :" + labelMin + ", link :" + linkMin);
+
+  p.$("#nowbtn").click(); key(p.win, "c"); await sleep(400); key(p.win, "x");
+  ok(!a.cinema && !hasT(), "leaving cinema goes back to following the clock", a.link);
+
+  play.click(); await sleep(200);
+  const tq = Math.floor((Date.now() + 5 * 3600e3) / 900000) * 900000;
+  p.win.location.hash = "#m=g&ll=10,20&z=1&l=w&t=" + new Date(tq).toISOString().slice(0, 16) + "Z";
+  await sleep(600);
+  ok(paused() && Math.abs(a.time - tq) < 60000, "a link pasted while playing stops on its time", new Date(a.time).toISOString() + (paused() ? "" : ", still playing"));
+
+  const g = a.globe; touch(p, "pointerdown", g.cx, g.cy); touch(p, "pointerup", g.cx, g.cy);
+  await until(() => p.$("#panel").classList.contains("open"), 1500);
+  p.$("#helpbtn").click(); key(p.win, "Escape");
+  ok(!p.$("#help").classList.contains("open") && p.$("#panel").classList.contains("open"), "Escape closes help and leaves the weather panel open");
+  p.$("#panel .close").click();
+
+  p.$("#nowbtn").click();
+  await sleep(1800);
+  const h1 = p.win.location.hash; await sleep(3500);
+  ok(p.win.location.hash === h1, "an idle spinning globe does not keep rewriting the address", h1 + " → " + p.win.location.hash);
+  key(p.win, "ArrowRight"); await sleep(1800);
+  ok(p.win.location.hash !== h1, "moving the globe yourself updates the address straight away");
+}
+
+/* ---------- a failing forecast service ---------- */
+function idbDel(db, store, keys){
+  return new Promise(res => {
+    let rq; try { rq = indexedDB.open(db, 1); } catch { return res(false); }
+    rq.onupgradeneeded = () => rq.result.createObjectStore(store, { keyPath: "k" });
+    rq.onerror = () => res(false);
+    rq.onsuccess = () => {
+      const d = rq.result;
+      try { const tx = d.transaction(store, "readwrite"); for (const k of keys) tx.objectStore(store).delete(k); tx.oncomplete = () => { d.close(); res(true); }; tx.onerror = tx.onabort = () => { d.close(); res(false); }; }
+      catch { d.close(); res(false); }
+    };
+  });
+}
+const forgetForecasts = () => idbDel("aeolus-cache-test", "fields", ["globe", "flat"]);
+async function faultTests(){
+  section("When the forecast service fails");
+  const grids = p => netLog.filter(n => n.win === p.win && n.kind === "grid").length;
+  const toast = p => p.$("#toast").textContent;
+
+  // an hourly limit with nothing saved
+  await forgetForecasts();
+  let p = await open(375, 812, "", "hourly"), a = p.win.aeolus;
+  await until(() => /hour/.test(toast(p)), 6000);
+  ok(p.$("#loader").classList.contains("gone") && /this hour/.test(toast(p)), "hourly limit: says so and clears the loading screen", toast(p).slice(0, 90) || "no message");
+  ok(!a.ready, "hourly limit, nothing saved: shows no made-up wind");
+  const n0 = grids(p);
+  const g0 = a.globe;
+  touch(p, "pointerdown", g0.cx, g0.cy); touch(p, "pointermove", g0.cx - 60, g0.cy); touch(p, "pointerup", g0.cx - 60, g0.cy);
+  key(p.win, "g");                                   // the limit is for this connection, not for one kind of map
+  await sleep(1500);
+  ok(grids(p) === n0, "hourly limit: moving or switching maps sends no more requests", (grids(p) - n0) + " more requests");
+
+  // a daily limit
+  await forgetForecasts();
+  p = await open(375, 812, "", "daily");
+  await until(() => /today/.test(toast(p)), 6000);
+  ok(/today|midnight/.test(toast(p)), "daily limit: says it resets at midnight UTC", toast(p).slice(0, 90) || "no message");
+
+  // an hourly limit with an older forecast saved: show that instead of nothing
+  await forgetForecasts();
+  await idbPut("aeolus-cache-test", "fields", { k: "globe", saved: Date.now() - 2 * 3600e3, field: seed });
+  p = await open(375, 812, "", "hourly"); a = p.win.aeolus;
+  await until(() => a.ready, 6000);
+  ok(a.ready && /last forecast/.test(toast(p)), "hourly limit with a saved forecast: shows it and says so", toast(p).slice(0, 110) || "no message");
+
+  // a broken answer, then Retry once the service is back
+  await forgetForecasts();
+  p = await open(375, 812, "", "broken"); a = p.win.aeolus;
+  await until(() => /Couldn/.test(toast(p)), 6000);
+  ok(/Couldn/.test(toast(p)) && !a.ready, "broken answer: says it could not get the wind, draws nothing wrong", toast(p).slice(0, 90) || "no message");
+  ok(!/problem starting/.test(toast(p)) && a.size.W > 0, "broken answer: the app keeps running");
+  faults.delete(p.win);
+  const retry = p.$("#toast button");
+  if (retry){ retry.click(); await until(() => a.ready, 6000); }
+  ok(!!retry && a.ready, "Retry fetches again once the service answers", retry ? "still not ready" : "no Retry button");
+  await forgetForecasts();
+}
+
 /* ---------- shared links ---------- */
 async function linkTests(){
   section("Shared links");
@@ -443,8 +563,10 @@ async function reflowTests(){
 }
 
 (async () => {
+  let realGallery = null;
   try {
     await prepareForecast();
+    realGallery = await idbCount("aeolus-skies", "skies");
     const phone = await sizeTests("Phone, upright", 375, 812, true);
     if (phone) await unitTests(phone);
     await sizeTests("Small phone", 320, 568, true);
@@ -452,6 +574,11 @@ async function reflowTests(){
     await sizeTests("Tablet / laptop", 1280, 800, false);
     await reflowTests();
     await linkTests();
+    await stateTests();
+    await faultTests();
+    section("Your own data");
+    const after = await idbCount("aeolus-skies", "skies");
+    ok(after === realGallery, "a test run adds nothing to the real gallery", realGallery + " → " + after);
   } catch (e) {
     section("Runner"); ok(false, "tests ran to the end", String(e && e.stack || e));
   }

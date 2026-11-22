@@ -690,7 +690,7 @@ function drawMap(){
 /* ---------------- wind field ---------------- */
 const GRID_COLS = 18, GRID_ROWS = 12;
 let fieldAbort = null, fieldTimer = null, fieldSeq = 0;
-let fieldBlockedUntil = 0, globeBlockedUntil = 0;      // set by a rate-limit answer; no requests before then
+let dataBlockedUntil = 0;      // set by a rate-limit answer; no forecast requests of any kind before then (the limit is per connection)
 const isStale = f => !f || !f.at || Date.now()-f.at > FIELD_TTL;
 
 function scheduleField(delay=450){
@@ -727,7 +727,7 @@ async function flatFromCache(seq, maxAge){
   return true;
 }
 async function fetchField(force){
-  if (Date.now() < fieldBlockedUntil) return;
+  if (Date.now() < dataBlockedUntil) return;
   const seq = ++fieldSeq;
   if (fieldAbort) fieldAbort.abort();
   fieldAbort = new AbortController();
@@ -761,7 +761,7 @@ async function fetchField(force){
     if (res.status === 429){
       // free-tier quota: wait as long as the service says, and show the last forecast meanwhile
       const plan = await rateLimitPlan(res);
-      fieldBlockedUntil = Date.now() + (plan.wait || 3*3600*1000) - 1000;
+      dataBlockedUntil = Date.now() + (plan.wait || 3*3600*1000) - 1000;
       if (seq !== fieldSeq) return;
       $("#loader").classList.add("gone");
       if (!field) await flatFromCache(seq, FIELD_STALE);
@@ -1063,6 +1063,7 @@ function setPlaying(v){
 }
 playBtn.addEventListener("click", ()=>setPlaying(!playing));
 $("#nowbtn").addEventListener("click", ()=>{
+  setPlaying(false);
   const f = activeField();
   displayTime = f ? clamp(Date.now(), f.t0*1000, f.t1*1000) : Date.now();
   followNow = true;
@@ -1079,6 +1080,7 @@ slider.addEventListener("input", ()=>{
 function panBy(key, k){
   const dx = key==="ArrowLeft" ? -1 : key==="ArrowRight" ? 1 : 0;
   const dy = key==="ArrowUp" ? -1 : key==="ArrowDown" ? 1 : 0;
+  userMovedAt = Date.now();
   if (mode === "globe"){
     gview.lon0 = normLon(gview.lon0 + dx*8*k);
     gview.lat0 = clamp(gview.lat0 - dy*8*k, -85, 85);
@@ -1138,7 +1140,8 @@ addEventListener("keydown", e=>{
   if (e.key === "Escape"){
     if ($("#lightbox").classList.contains("open")) closeLightbox();
     else if ($("#gallery").classList.contains("open")) closeGallery();
-    else { closePanel(); dlgClose($("#help")); }
+    else if ($("#help").classList.contains("open")) dlgClose($("#help"));
+    else closePanel();
   }
 });
 
@@ -1249,6 +1252,7 @@ mapC.addEventListener("pointermove", e=>{
     const dx = e.clientX-dragInfo.x, dy = e.clientY-dragInfo.y;
     dragInfo.moved = Math.max(dragInfo.moved, Math.hypot(dx,dy));
     if (mode === "globe"){                       // drag turns the sphere
+      userMovedAt = Date.now();
       const k = 180/(Math.PI*globeR());
       gview.lon0 = ((dragInfo.glon - dx*k + 180)%360+360)%360-180;
       gview.lat0 = clamp(dragInfo.glat + dy*k, -85, 85);
@@ -1312,6 +1316,7 @@ mapC.addEventListener("dblclick", e=>{
 });
 
 function zoomAt(px,py,dz){
+  userMovedAt = Date.now();
   if (mode === "globe"){
     gview.zoom = clamp(gview.zoom*Math.pow(2,dz), GZMIN, GZMAX);
     clearTrails();
@@ -1539,7 +1544,7 @@ searchEl.addEventListener("input", ()=>{
           const plon = +place.longitude, plat = +place.latitude;
           if (!Number.isFinite(plon) || !Number.isFinite(plat)) return;
           view.lon = normLon(plon); view.lat = clamp(plat,-85,85); view.zoom = 6;
-          gview.lon0 = normLon(plon); gview.lat0 = clamp(plat,-85,85);
+          gview.lon0 = normLon(plon); gview.lat0 = clamp(plat,-85,85); userMovedAt = Date.now();
           resultsEl.classList.remove("open"); searchEl.value = place.name; searchEl.blur();
           onViewChanged(true); initParticles(); scheduleField(50);
           openPanel(normLon(plon), clamp(plat,-85,85));   // and show its weather, so the search ends somewhere
@@ -1563,7 +1568,7 @@ $("#locate").addEventListener("click", ()=>{
   if (!navigator.geolocation) return showToast("Geolocation isn't available here.");
   navigator.geolocation.getCurrentPosition(pos=>{
     view.lon = pos.coords.longitude; view.lat = pos.coords.latitude; view.zoom = 6;
-    gview.lon0 = view.lon; gview.lat0 = clamp(view.lat,-85,85);
+    gview.lon0 = view.lon; gview.lat0 = clamp(view.lat,-85,85); userMovedAt = Date.now();
     onViewChanged(true); initParticles(); scheduleField(50);
   }, ()=>showToast("Couldn't get your location."));
 });
@@ -1811,7 +1816,7 @@ async function globeFromCache(seq, maxAge){
   return true;
 }
 async function fetchGlobeField(force){
-  if (Date.now() < globeBlockedUntil) return;
+  if (Date.now() < dataBlockedUntil) return;
   const seq=++gSeq;
   if (gAbort) gAbort.abort();
   gAbort = new AbortController();
@@ -1832,7 +1837,7 @@ async function fetchGlobeField(force){
     const res=await fetchT(url,{signal:gAbort.signal});
     if (res.status===429){
       const plan=await rateLimitPlan(res);
-      globeBlockedUntil = Date.now() + (plan.wait || 3*3600*1000) - 1000;
+      dataBlockedUntil = Date.now() + (plan.wait || 3*3600*1000) - 1000;
       if (seq!==gSeq) return;
       $("#loader").classList.add("gone");
       if (!gfield) await globeFromCache(seq, FIELD_STALE);
@@ -1988,6 +1993,8 @@ function stepGlobe(){
 }
 function setMode(m){
   if (m===mode) return;
+  if (mode==="flat"){ fieldSeq++; clearTimeout(fieldTimer); if (fieldAbort) fieldAbort.abort(); }
+  else { gSeq++; if (gAbort) gAbort.abort(); }
   mode=m;
   document.body.classList.toggle("globe", m==="globe");
   $("#globebtn").classList.toggle("on", m==="globe");
@@ -2014,7 +2021,7 @@ let galDB=null;
 function galOpen(){
   if (galDB) return Promise.resolve(galDB);
   return new Promise((res,rej)=>{
-    const rq=indexedDB.open("aeolus-skies",1);
+    const rq=indexedDB.open("aeolus-skies"+TEST_DB,1);
     rq.onupgradeneeded=()=>{ rq.result.createObjectStore("skies",{keyPath:"id"}); };
     rq.onsuccess=()=>{ galDB=rq.result; res(galDB); };
     rq.onerror=()=>rej(rq.error);
@@ -2169,7 +2176,7 @@ function setCinema(on){
   $("#cinebtn").classList.toggle("on", on);
   $("#cinebtn").setAttribute("aria-pressed", on);
   if (on){
-    preCinema = { silk, playing };
+    preCinema = { silk, playing, follow: followNow };
     autoBucket = null; autoCount = 0;           // each cinema run may keep up to 24 frames
     closePanel();
     resultsEl.classList.remove("open");
@@ -2178,6 +2185,12 @@ function setCinema(on){
   } else if (preCinema){
     setSilk(preCinema.silk);
     setPlaying(preCinema.playing);
+    if (preCinema.follow){
+      followNow = true;
+      const f = activeField();
+      displayTime = f ? clamp(Date.now(), f.t0*1000, f.t1*1000) : Date.now();
+      syncTimeUI();
+    }
     preCinema = null;
   }
 }
@@ -2351,7 +2364,7 @@ function viewState(){
   const st = { m: mode==="globe" ? "g" : "f", ll: [+clamp(ll.lat,-85,85).toFixed(2), +normLon(ll.lon).toFixed(2)],
     z: +(mode==="globe" ? gview.zoom : view.zoom).toFixed(2),
     l: (show.wind?"w":"")+(show.temp?"t":"")+(show.rain?"r":""), s: silk && !cinema };
-  if (!followNow) st.t = Math.round(displayTime/900000)*900000;      // to the quarter hour
+  if (!followNow) st.t = Math.floor(displayTime/900000)*900000;      // to the quarter hour, as the time label shows it
   if (marker) st.p = [+marker.lat.toFixed(3), +normLon(marker.lon).toFixed(3)];
   return st;
 }
@@ -2390,10 +2403,11 @@ function noteSharedTime(){
 }
 function applyLink(st, opts={}){
   if (!st || !Object.keys(st).length) return false;
+  if (!opts.initial){ if (cinema) setCinema(false); setPlaying(false); }   // a link shows a moment: hold still on it
   if (st.l !== undefined) for (const k of ["wind","temp","rain"]) setLayer(k, st.l.includes(k[0]));
   if (!cinema && !!st.s !== silk) setSilk(!!st.s);
   const target = st.m==="f" ? "flat" : st.m==="g" ? "globe" : mode;
-  if (st.ll){ view.lat = st.ll[0]; view.lon = st.ll[1]; gview.lat0 = st.ll[0]; gview.lon0 = st.ll[1]; }
+  if (st.ll){ view.lat = st.ll[0]; view.lon = st.ll[1]; gview.lat0 = st.ll[0]; gview.lon0 = st.ll[1]; userMovedAt = Date.now(); }
   if (st.z !== undefined){
     if (target==="globe") gview.zoom = clamp(st.z, GZMIN, GZMAX); else view.zoom = clamp(st.z, ZMIN, ZMAX);
   }
@@ -2418,12 +2432,16 @@ function applyLink(st, opts={}){
 /* the address keeps up with the view: quietly, without adding history entries,
    and not mid-gesture (Safari refuses more than 100 address changes in 30 s) */
 let linkShown = location.hash;
+var userMovedAt = 0, lastLinkAt = 0, lastLinkCore = "";
 function updateLink(){
   if (pointers.size || document.hidden || !activeField()) return;
-  const h = formatLink(viewState());
+  const st = viewState(), h = formatLink(st);
   if (h === linkShown) return;
-  linkShown = h;
-  try{ history.replaceState(history.state, "", h); }catch{}
+  const core = formatLink({ ...st, ll: [0, 0] });          // everything but the centre
+  // the idle spin is the only thing that moves the centre by itself: write that at most every 20 s
+  if (mode === "globe" && core === lastLinkCore && userMovedAt <= lastLinkAt && Date.now()-lastLinkAt < 20000) return;
+  try{ history.replaceState(history.state, "", h); }catch{ return; }   // refused (Safari rate limit): try again next time
+  linkShown = h; lastLinkCore = core; lastLinkAt = Date.now();
 }
 addEventListener("hashchange", ()=>{                // someone pasted or edited a link into this tab
   if (location.hash === linkShown) return;
@@ -2433,7 +2451,7 @@ addEventListener("hashchange", ()=>{                // someone pasted or edited 
 function shareLink(){
   const url = location.href.split("#")[0] + formatLink(viewState());
   linkShown = ""; updateLink();
-  const text = "Wind, temperature and rain · " + timelabel.textContent;
+  const text = followNow ? "Wind, temperature and rain, live" : "Wind, temperature and rain · " + timelabel.textContent;
   if (isMobile && navigator.share){
     navigator.share({ title:"Aeolus", text, url }).catch(err=>{ if (!err || err.name !== "AbortError") copyLink(url); });
     return;
