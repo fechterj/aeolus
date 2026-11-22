@@ -205,6 +205,15 @@
   #lbbtns button:hover{color:var(--accent)}
   #gallery .close,#help .close{position:absolute;top:12px;right:14px;color:var(--dim);font-size:17px}
 
+  /* keyboard focus is always visible */
+  button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #slider:focus-visible{outline:2px solid var(--accent);outline-offset:5px}
+  /* people who ask for less motion get a still picture and no interface animation */
+  @media (prefers-reduced-motion: reduce){
+    *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;
+      transition-duration:.01ms!important}
+  }
+
   @media (max-width:760px){
     #brand p{display:none}
     /* phone widths: brand, then search + buttons on their own full row, then the two toolbars */
@@ -225,12 +234,12 @@
 </style>
 </head>
 <body>
-<canvas id="map"></canvas>
-<canvas id="layer"></canvas>
-<canvas id="fx"></canvas>
-<canvas id="globe"></canvas>
-<canvas id="gfx"></canvas>
-<canvas id="bloom"></canvas>
+<canvas id="map" role="img" aria-label="Live map of the wind across the world. Arrow keys move it, plus and minus zoom, Enter shows the weather at the centre."></canvas>
+<canvas id="layer" aria-hidden="true"></canvas>
+<canvas id="fx" aria-hidden="true"></canvas>
+<canvas id="globe" aria-hidden="true"></canvas>
+<canvas id="gfx" aria-hidden="true"></canvas>
+<canvas id="bloom" aria-hidden="true"></canvas>
 <div id="vignette"></div>
 <div id="barTop" class="cinebar"></div>
 <div id="barBottom" class="cinebar"></div>
@@ -243,39 +252,39 @@
       <p>the living wind</p>
     </div>
     <div id="layers" class="glass">
-      <button data-l="wind" class="on"><i style="background:#6ee7ff;color:#6ee7ff"></i>wind</button>
-      <button data-l="temp"><i style="background:#e8b83a;color:#e8b83a"></i>temp</button>
-      <button data-l="rain"><i style="background:#5f9dff;color:#5f9dff"></i>rain</button>
+      <button data-l="wind" class="on" aria-pressed="true"><i style="background:#6ee7ff;color:#6ee7ff"></i>wind</button>
+      <button data-l="temp" aria-pressed="false"><i style="background:#e8b83a;color:#e8b83a"></i>temp</button>
+      <button data-l="rain" aria-pressed="false"><i style="background:#5f9dff;color:#5f9dff"></i>rain</button>
     </div>
     <div id="xp" class="glass">
-      <button id="silkbtn" title="Long-exposure paint mode (S)"><i style="background:#f0faff;color:#f0faff"></i>silk</button>
-      <button id="globebtn" title="Night globe (G)">🌍 globe</button>
-      <button id="cinebtn" title="Cinema mode (C)">⛶ cinema</button>
-      <button id="capbtn" title="Save this sky as a poster">⤓ capture</button>
-      <button id="galbtn" title="Your collected skies">▦ gallery</button>    </div>
+      <button id="silkbtn" title="Long-exposure paint mode (S)" aria-label="Silk, long-exposure mode" aria-pressed="false"><i style="background:#f0faff;color:#f0faff"></i>silk</button>
+      <button id="globebtn" title="Night globe (G)" aria-label="Night globe" aria-pressed="false">🌍 globe</button>
+      <button id="cinebtn" title="Cinema mode (C)" aria-label="Cinema mode" aria-pressed="false">⛶ cinema</button>
+      <button id="capbtn" title="Save this sky as a poster" aria-label="Capture this sky">⤓ capture</button>
+      <button id="galbtn" title="Your collected skies" aria-label="Gallery of your captured skies">▦ gallery</button>    </div>
   </div>
   <div id="topright">
     <div id="searchwrap">
-      <input id="search" type="text" placeholder="Fly to a place…" autocomplete="off" spellcheck="false">
+      <input id="search" type="text" aria-label="Search for a place" placeholder="Fly to a place…" autocomplete="off" spellcheck="false">
       <div id="results" class="glass"></div>
     </div>
-    <button id="locate" class="iconbtn glass" title="Use my location">⌖</button>
-    <button id="units" class="iconbtn glass" title="Cycle units">m/s</button>
-    <button id="helpbtn" class="iconbtn glass" title="About & controls">?</button>
+    <button id="locate" class="iconbtn glass" title="Use my location" aria-label="Use my location">⌖</button>
+    <button id="units" class="iconbtn glass" title="Cycle units" aria-label="Units: m/s. Press to change">m/s</button>
+    <button id="helpbtn" class="iconbtn glass" title="About &amp; controls" aria-label="About and controls">?</button>
   </div>
 </header>
 
 <div id="legend" class="glass"></div>
 
 <div id="timebar" class="glass">
-  <button id="play" class="tbtn" title="Play time (space)">▶</button>
+  <button id="play" class="tbtn" title="Play time (space)" aria-label="Play forecast time">▶</button>
   <button id="nowbtn" class="tbtn" title="Jump to now">NOW</button>
-  <input id="slider" type="range" min="0" max="71" step="0.05" value="0">
+  <input id="slider" type="range" aria-label="Forecast time" min="0" max="71" step="0.05" value="0">
   <div id="timelabel">—</div>
 </div>
 
-<aside id="panel" class="glass">
-  <button class="close" title="Close">✕</button>
+<aside id="panel" class="glass" aria-label="Weather at the selected point" aria-live="polite">
+  <button class="close" title="Close" aria-label="Close">✕</button>
   <div id="pname">—</div>
   <div id="pcoords">—</div>
   <div id="pmain">
@@ -300,12 +309,12 @@
 </aside>
 
 <div id="zoomctl" class="glass">
-  <button id="zin" title="Zoom in (+)">+</button>
-  <button id="zout" title="Zoom out (−)">−</button>
+  <button id="zin" title="Zoom in (+)" aria-label="Zoom in">+</button>
+  <button id="zout" title="Zoom out (−)" aria-label="Zoom out">−</button>
 </div>
 
 <div id="attr">tiles © <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> · HERE · Garmin · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OSM</a> · data <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> · outlines Natural Earth</div>
-<div id="toast" class="glass"></div>
+<div id="toast" class="glass" role="status" aria-live="polite"></div>
 
 <div id="loader">
   <div>
@@ -314,9 +323,9 @@
   </div>
 </div>
 
-<div id="gallery">
+<div id="gallery" role="dialog" aria-modal="true" aria-label="Your captured skies">
   <div class="card glass">
-    <button class="close">✕</button>
+    <button class="close" aria-label="Close">✕</button>
     <h2>YOUR <span>SKIES</span></h2>
     <p class="gsub">Every capture is kept here, on this device. Cinema mode collects a frame every two forecast hours while it plays, and keeps the newest 96.</p>
     <div id="galgrid"></div>
@@ -324,7 +333,7 @@
     <div class="galfoot"><button id="galclear">clear all</button><span id="galcount"></span></div>
   </div>
 </div>
-<div id="lightbox">
+<div id="lightbox" role="dialog" aria-modal="true" aria-label="Captured sky">
   <img id="lbimg" alt="captured sky">
   <div id="lbcap" class="glass"></div>
   <div id="lbbtns">
@@ -334,9 +343,9 @@
   </div>
 </div>
 
-<div id="help">
+<div id="help" role="dialog" aria-modal="true" aria-label="About Aeolus and its controls">
   <div class="card glass">
-    <button class="close">✕</button>
+    <button class="close" aria-label="Close">✕</button>
     <h2>AEOLU<span>S</span></h2>
     <ul>
       <li><b>Drag</b> to move · <b>scroll / pinch</b> or <b>+ / −</b> to zoom · <b>double-click</b> zooms in</li>
@@ -348,6 +357,7 @@
       <li><b>Cinema</b> — everything disappears and the atmosphere performs · <b>Capture</b> saves it as a poster</li>      <li><b>Globe</b> (G) — the same wind, temperature and rain wrapping a rotating night Earth, city lights and all</li>
       <li><b>Gallery</b> — every sky you capture is kept on this device; cinema collects them as it plays</li>
       <li><b>Search</b> flies to any place on Earth</li>
+      <li><b>Keyboard</b> — arrow keys move the view (Shift for bigger steps) · <b>Enter</b> shows the weather at the centre</li>
       <li>Every streamline is real air: ~3,000 particles riding the actual forecast wind field, colored by speed</li>
     </ul>
     <div class="credit">
@@ -448,6 +458,13 @@ async function rateLimitPlan(res){
 const view = { lon: 12, lat: 32, zoom: 3.1 };   // center + fractional zoom
 const ZMIN = 1.6, ZMAX = 9;
 let W = innerWidth, H = innerHeight, DPR = Math.min(devicePixelRatio||1, 2);
+/* quality steps down by itself on a device that can't keep up:
+   0 full · 1 no glow · 2 fewer particles, no cinema frames · 3 also one canvas pixel per CSS pixel */
+let quality = 0, perfN = 0, perfSum = 0, perfHold = 0;
+/* reduced motion: the wind is drawn as one still long exposure instead of an animation */
+const rmq = matchMedia("(prefers-reduced-motion: reduce)");
+let reduced = rmq.matches, stillDirty = true, stillAt = 0;
+let glFrame = 0, glValid = false;
 let field = null;              // current wind grid
 let displayTime = Date.now();  // ms, the moment being shown
 let playing = false;
@@ -496,7 +513,7 @@ function viewBounds(){
 const mapC = $("#map"), fxC = $("#fx"), layerC = $("#layer"), bloomC = $("#bloom");
 const mctx = mapC.getContext("2d"), fctx = fxC.getContext("2d"), lctx = layerC.getContext("2d"), bctx = bloomC.getContext("2d");
 function sizeCanvases(){
-  W = innerWidth; H = innerHeight; DPR = Math.min(devicePixelRatio||1, 2);
+  W = innerWidth; H = innerHeight; DPR = Math.min(devicePixelRatio||1, quality>=3 ? 1 : 2);
   for (const c of [mapC,fxC,layerC,bloomC,globeC,gfxC]){
     c.width = Math.round(W*DPR); c.height = Math.round(H*DPR);
   }
@@ -846,7 +863,8 @@ let parts = [];
 function particleCount(){
   const area = W*H;
   const base = clamp(Math.round(area/360), 1400, 6000);
-  return ("ontouchstart" in window && area < 500000) ? Math.round(base*0.6) : base;
+  const n = ("ontouchstart" in window && area < 500000) ? Math.round(base*0.6) : base;
+  return quality>=2 ? Math.round(n*0.55) : n;
 }
 function spawn(p){
   const b = viewBounds();
@@ -865,7 +883,7 @@ function initParticles(){
     parts.push(p);
   }
 }
-function clearTrails(){ fctx.clearRect(0,0,W,H); gfx.clearRect(0,0,W,H); }
+function clearTrails(){ fctx.clearRect(0,0,W,H); gfx.clearRect(0,0,W,H); stillDirty = true; }
 
 function stepParticles(){
   if (!field) return;
@@ -912,6 +930,7 @@ function syncTimeUI(){
   const field = activeField();
   if (!field) return;
   layerDirty = true;
+  stillDirty = true;
   const h = (displayTime/1000-field.t0)/3600;
   slider.value = clamp(h,0,+slider.max);
   const d = new Date(displayTime);
@@ -920,10 +939,12 @@ function syncTimeUI(){
   const hh = String(d.getUTCHours()).padStart(2,"0");
   const mm = String(Math.floor(d.getUTCMinutes()/15)*15).padStart(2,"0");
   timelabel.textContent = `${days[d.getUTCDay()]} ${d.getUTCDate()} ${mons[d.getUTCMonth()]} · ${hh}:${mm} UTC`;
+  slider.setAttribute("aria-valuetext", timelabel.textContent);
 }
 function setPlaying(v){
   playing = v;
   playBtn.textContent = v ? "❚❚" : "▶";
+  playBtn.setAttribute("aria-label", v ? "Pause forecast time" : "Play forecast time");
 }
 playBtn.addEventListener("click", ()=>setPlaying(!playing));
 $("#nowbtn").addEventListener("click", ()=>{
@@ -937,11 +958,60 @@ slider.addEventListener("input", ()=>{
   displayTime = (f.t0 + (+slider.value)*3600)*1000;
   syncTimeUI();
 });
+/* keyboard travel: the same moves as dragging */
+function panBy(key, k){
+  const dx = key==="ArrowLeft" ? -1 : key==="ArrowRight" ? 1 : 0;
+  const dy = key==="ArrowUp" ? -1 : key==="ArrowDown" ? 1 : 0;
+  if (mode === "globe"){
+    gview.lon0 = normLon(gview.lon0 + dx*8*k);
+    gview.lat0 = clamp(gview.lat0 - dy*8*k, -85, 85);
+    clearTrails();
+  } else {
+    const c = centerWorld();
+    view.lon = normLon(xToLon(c.x + dx*80*k));
+    view.lat = clamp(yToLat(c.y + dy*80*k), -85, 85);
+    onViewChanged(false);
+    scheduleField();
+  }
+}
+/* dialogs: focus goes in when one opens, stays in while it is open, and returns to where it was */
+const dlgStack = [];
+function dlgOpen(el, focusSel){
+  if (!el.classList.contains("open")){
+    dlgStack.push({ el, ret: document.activeElement });
+    el.classList.add("open");
+  }
+  const f = el.querySelector(focusSel || "button");
+  if (f) f.focus();
+}
+function dlgClose(el){
+  if (!el.classList.contains("open")) return;
+  el.classList.remove("open");
+  const i = dlgStack.findIndex(d=>d.el === el);
+  if (i < 0) return;
+  const ret = dlgStack.splice(i,1)[0].ret;
+  if (ret && ret.focus && document.contains(ret)) ret.focus();
+}
+document.addEventListener("keydown", e=>{
+  if (e.key !== "Tab" || !dlgStack.length) return;
+  const el = dlgStack[dlgStack.length-1].el;
+  const f = [...el.querySelectorAll("button,[href],input")].filter(x=>x.offsetParent !== null);
+  if (!f.length) return;
+  const first = f[0], last = f[f.length-1], cur = document.activeElement;
+  if (!el.contains(cur)){ e.preventDefault(); first.focus(); }
+  else if (e.shiftKey && cur === first){ e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && cur === last){ e.preventDefault(); first.focus(); }
+});
 addEventListener("keydown", e=>{
   if (e.target.tagName === "INPUT") return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;            // leave browser and system shortcuts alone
   if (["Shift","Meta","Control","Alt","CapsLock"].includes(e.key)) return;
+  if (dlgStack.length && e.key !== "Escape") return;           // a dialog is open: its own keys only
+  if (e.key === "Tab") return;
   if (cinema){ setCinema(false); return; }
+  if (e.target.tagName === "BUTTON" && (e.code === "Space" || e.key === "Enter")) return;   // that key presses the button
+  if (e.key.startsWith("Arrow")){ e.preventDefault(); panBy(e.key, e.shiftKey ? 3 : 1); return; }
+  if (e.key === "Enter"){ const ll = centerLL(); openPanel(ll.lon, ll.lat); return; }
   if (e.code === "Space"){ e.preventDefault(); setPlaying(!playing); }
   if (e.key === "+" || e.key === "=") zoomBy(0.8);
   if (e.key === "-" || e.key === "_") zoomBy(-0.8);
@@ -950,43 +1020,74 @@ addEventListener("keydown", e=>{
   if (e.key === "g" || e.key === "G") setMode(mode==="globe"?"flat":"globe");
   if (e.key === "Escape"){
     if ($("#lightbox").classList.contains("open")) closeLightbox();
-    else if ($("#gallery").classList.contains("open")) $("#gallery").classList.remove("open");
-    else { closePanel(); $("#help").classList.remove("open"); }
+    else if ($("#gallery").classList.contains("open")) dlgClose($("#gallery"));
+    else { closePanel(); dlgClose($("#help")); }
   }
 });
 
 /* ---------------- main loop ---------------- */
+/* frame-time watch: 90 real frames averaging under about 36 fps drops one quality step.
+   Frames over 250 ms are a throttled or hidden tab, not a slow device, and are ignored. */
+function perfSample(rawDt){
+  if (rawDt > 0.25 || document.hidden || performance.now() < perfHold) return;
+  perfSum += rawDt; perfN++;
+  if (perfN < 90) return;
+  const avg = perfSum/perfN;
+  perfN = 0; perfSum = 0;
+  if (avg > 0.028 && quality < 3) setQuality(quality+1);
+}
+function setQuality(q){
+  quality = q;
+  perfHold = performance.now()+3000;           // let the change settle before judging again
+  bloomC.style.display = q>=1 ? "none" : "";
+  if (q>=3) sizeCanvases();
+  if (q>=2){ initParticles(); initRain(); if (gparts.length) initGlobeParticles(); }
+}
+/* reduced motion: run the simulation forward off-beat and hold the result as a still */
+function stillFrame(now, step, f){
+  if (!f || !stillDirty || now < stillAt) return;
+  stillDirty = false;
+  stillAt = now+600;                            // while time plays, redraw the still at most this often
+  fctx.clearRect(0,0,W,H); gfx.clearRect(0,0,W,H);
+  for (let i=0;i<110;i++) step();
+}
+if (rmq.addEventListener) rmq.addEventListener("change", e=>{ reduced = e.matches; clearTrails(); });
 let lastT = performance.now();
 function frame(now){
-  const dt = Math.min((now-lastT)/1000, 0.1); lastT = now;
+  const rawDt = (now-lastT)/1000, dt = Math.min(rawDt, 0.1); lastT = now;
   if (!mapC.width || !mapC.height){            // window not laid out yet: wait, don't die
     if (innerWidth && innerHeight){ sizeCanvases(); initParticles(); initRain(); }
     requestAnimationFrame(frame); return;
   }
   const af = mode==="globe" ? gfield : field;
+  if (!reduced) perfSample(rawDt);
   if (playing && af){
     displayTime += dt*3600*1000*0.85;          // ~0.85 forecast-hours per second
     if (displayTime > af.t1*1000) displayTime = af.t0*1000;
     syncTimeUI();
   }
   if (mode==="globe"){
-    if (pointers.size===0 && !silk){              // slow idle rotation (held still for long exposures)
+    if (pointers.size===0 && !silk && !reduced){  // slow idle rotation (held still for long exposures)
       gview.lon0 = ((gview.lon0+0.006+180)%360+360)%360-180;
     }
     drawGlobe();
-    stepGlobe();
+    if (reduced) stillFrame(now, stepGlobe, gfield); else stepGlobe();
   } else {
     if (mapDirty) drawMap();
     if (layerDirty){ renderLayer(); layerDirty = false; }
-    stepParticles();
+    if (reduced) stillFrame(now, stepParticles, field); else stepParticles();
   }
   // bloom: blurred copy of the trails, screen-blended by CSS
-  bctx.clearRect(0,0,W,H);
-  bctx.drawImage(mode==="globe"?gfxC:fxC,0,0,W,H);  if (cinema && playing && af){
+  if (quality < 1){
+    bctx.clearRect(0,0,W,H);
+    bctx.drawImage(mode==="globe"?gfxC:fxC,0,0,W,H);
+  }
+  if (cinema && playing && af){
     const bucket = Math.floor(displayTime/7200000);   // a kept frame every 2 forecast hours
     if (bucket !== autoBucket){
       autoBucket = bucket;
-      if (autoCount < 24){ autoCount++; saveSky(buildCapture(1), true); }
+      // kept frames are at most 1280 px wide, and skipped on a device that is already struggling
+      if (autoCount < 24 && quality < 2){ autoCount++; saveSky(buildCapture(Math.min(1, 1280/W)), true); }
     }
   }
   requestAnimationFrame(frame);
@@ -1139,6 +1240,8 @@ document.querySelectorAll("#layers button").forEach(b=>{
     const k = b.dataset.l;
     show[k] = !show[k];
     b.classList.toggle("on", show[k]);
+    b.setAttribute("aria-pressed", show[k]);
+    stillDirty = true;
     if (k==="wind" && show.wind) initParticles();
     if (k==="rain" && show.rain) initRain();
     layerDirty = true;
@@ -1301,12 +1404,13 @@ $("#locate").addEventListener("click", ()=>{
 $("#units").addEventListener("click", ()=>{
   unitIdx = (unitIdx+1)%UNITS.length;
   $("#units").textContent = unit().name;
+  $("#units").setAttribute("aria-label", "Units: "+unit().name+". Press to change");
   buildLegend();
   renderPanel();
 });
-$("#helpbtn").addEventListener("click", ()=>$("#help").classList.add("open"));
-$("#help .close").addEventListener("click", ()=>$("#help").classList.remove("open"));
-$("#help").addEventListener("click", e=>{ if (e.target.id==="help") $("#help").classList.remove("open"); });
+$("#helpbtn").addEventListener("click", ()=>dlgOpen($("#help"), ".close"));
+$("#help .close").addEventListener("click", ()=>dlgClose($("#help")));
+$("#help").addEventListener("click", e=>{ if (e.target.id==="help") dlgClose($("#help")); });
 
 let toastTimer = null;
 function showToast(msg, retry, ms){
@@ -1503,7 +1607,7 @@ function drawGlobe(){
   for (let i=0;i<CITIES.length;i++){
     const c=CITIES[i], p=gproj(c[0],c[1]);
     if (p.Z<=0.03) continue;
-    const s=gscreen(p), tw=0.75+0.25*Math.sin(t*1.7+i*2.3);
+    const s=gscreen(p), tw=reduced?0.9:0.75+0.25*Math.sin(t*1.7+i*2.3);
     const a=0.5*tw*Math.min(1,p.Z+0.25);
     gctx.fillStyle=`rgba(255,214,150,${a*0.16})`;
     gctx.beginPath(); gctx.arc(s.x,s.y,c[2]*2.6,0,TAU); gctx.fill();
@@ -1635,6 +1739,7 @@ const goctx = goff.getContext("2d");
 function drawGlobeLayer(){
   if (!gfield || (!show.temp && !show.rain)) return;
   const R=globeR(), cx=W/2, cy=H/2;
+  if (!(quality>=1 && (++glFrame & 1) && glValid)){   // on a struggling device, recompute every other frame
   const img=goctx.createImageData(GL,GL), d=img.data;
   const l0=gview.lat0*D2R, sl0=Math.sin(l0), cl0=Math.cos(l0);
   for (let j=0;j<GL;j++){
@@ -1663,6 +1768,8 @@ function drawGlobeLayer(){
     }
   }
   goctx.putImageData(img,0,0);
+  glValid=true;
+  }
   gctx.save();
   gctx.beginPath(); gctx.arc(cx,cy,R,0,TAU); gctx.clip();
   gctx.imageSmoothingEnabled=true; gctx.imageSmoothingQuality="high";
@@ -1678,7 +1785,8 @@ function spawnG(p){
 }
 function initGlobeParticles(){
   gparts=[];
-  for (let i=0;i<2600;i++){ const p=spawnG({}); p.age=Math.random()*p.max; gparts.push(p); }
+  const n=quality>=2?1430:2600;
+  for (let i=0;i<n;i++){ const p=spawnG({}); p.age=Math.random()*p.max; gparts.push(p); }
 }
 function stepGlobe(){
   if (!gfield) return;
@@ -1710,6 +1818,7 @@ function setMode(m){
   mode=m;
   document.body.classList.toggle("globe", m==="globe");
   $("#globebtn").classList.toggle("on", m==="globe");
+  $("#globebtn").setAttribute("aria-pressed", m==="globe");
   clearTrails();
   if (m==="globe"){
     gview.lon0 = ((view.lon+180)%360+360)%360-180;   // open on the part of the world you were looking at
@@ -1790,7 +1899,7 @@ async function saveSky(c, auto){
 const fmtPlace=r=>(r.mode==="globe"?"🌍 ":"")+Math.abs(r.lat).toFixed(1)+"°"+(r.lat>=0?"N":"S")+" "+Math.abs(r.lon).toFixed(1)+"°"+(r.lon>=0?"E":"W");
 let galURLs=[], lbRec=null, lbURL=null;
 async function openGallery(){
-  $("#gallery").classList.add("open");
+  dlgOpen($("#gallery"), ".close");
   const grid=$("#galgrid");
   grid.innerHTML="";
   galURLs.forEach(URL.revokeObjectURL); galURLs=[];
@@ -1801,7 +1910,7 @@ async function openGallery(){
   for (const r of recs){
     const b=document.createElement("button");
     const u=URL.createObjectURL(r.thumb); galURLs.push(u);
-    const img=document.createElement("img"); img.src=u; img.loading="lazy";
+    const img=document.createElement("img"); img.src=u; img.loading="lazy"; img.alt="Captured sky, "+fmtPlace(r);
     const meta=document.createElement("div"); meta.className="meta";
     const d=new Date(r.when);
     const b1=document.createElement("b"); b1.textContent=fmtPlace(r);
@@ -1818,12 +1927,12 @@ function openLightbox(r){
   $("#lbimg").src=lbURL;
   const d=new Date(r.when);
   $("#lbcap").textContent=`${fmtPlace(r)} · ${d.toISOString().slice(0,16).replace("T"," ")} UTC · ${r.mode==="globe"?"night globe":"flat map"}${r.auto?" · cinema frame":""}`;
-  $("#lightbox").classList.add("open");
+  dlgOpen($("#lightbox"), "#lbclose");
 }
-function closeLightbox(){ $("#lightbox").classList.remove("open"); lbRec=null; }
+function closeLightbox(){ dlgClose($("#lightbox")); lbRec=null; }
 $("#galbtn").addEventListener("click", openGallery);
-$("#gallery .close").addEventListener("click", ()=>$("#gallery").classList.remove("open"));
-$("#gallery").addEventListener("click", e=>{ if(e.target.id==="gallery") $("#gallery").classList.remove("open"); });
+$("#gallery .close").addEventListener("click", ()=>dlgClose($("#gallery")));
+$("#gallery").addEventListener("click", e=>{ if(e.target.id==="gallery") dlgClose($("#gallery")); });
 $("#lbclose").addEventListener("click", closeLightbox);
 $("#lightbox").addEventListener("click", e=>{ if(e.target.id==="lightbox") closeLightbox(); });
 $("#lbdown").addEventListener("click", ()=>{
@@ -1854,6 +1963,7 @@ $("#galclear").addEventListener("click", async e=>{
 function setSilk(on){
   silk = on;
   $("#silkbtn").classList.toggle("on", on);
+  $("#silkbtn").setAttribute("aria-pressed", on);
   for (const p of parts) p.max = on ? 500+Math.random()*700 : 60+Math.random()*160;
   for (const p of gparts) p.max = on ? 500+Math.random()*700 : 70+Math.random()*160;
   clearTrails();
@@ -1863,6 +1973,7 @@ function setCinema(on){
   cinema = on;
   document.body.classList.toggle("cinema", on);
   $("#cinebtn").classList.toggle("on", on);
+  $("#cinebtn").setAttribute("aria-pressed", on);
   if (on){
     preCinema = { silk, playing };
     autoBucket = null; autoCount = 0;           // each cinema run may keep up to 24 frames
