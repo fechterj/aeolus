@@ -247,6 +247,14 @@ async function unitTests(p){
   ok(lo >= 1 - a.PULSE_DEPTH - 1e-6 && hi <= 1 + 1e-6, "the light pulse stays between " + (1 - a.PULSE_DEPTH) + " and full brightness", lo.toFixed(3) + "…" + hi.toFixed(3));
   ok(worstNear < 0.03, "neighbouring lights pulse together (a pattern, not noise)", "largest difference " + worstNear.toFixed(3));
   ok(Math.abs(a.pulseAt(20, 10, 0) - a.pulseAt(20, 10, 24)) < 1e-6 && Math.abs(a.pulseAt(20, 10, 0) - a.pulseAt(20, 10, 12)) > 0.01, "the pulse turns once every 24 seconds");
+  // temperature colours: smooth through the grid, never creased at its lines, and exact at each point
+  const tf = { cols: 4, rows: 4, t0: 0, hours: [{ tp: Float32Array.from([0,0,0,0, 0,10,20,0, 0,30,5,0, 0,0,0,0]) }, { tp: Float32Array.from([0,0,0,0, 0,10,20,0, 0,30,5,0, 0,0,0,0]) }] };
+  const exact = [[1,1,10],[2,1,20],[1,2,30],[2,2,5]].every(([x,y,v]) => Math.abs(a.tempCubic(tf, x, y, 0, false) - v) < 1e-6);
+  const e = 1e-4, slope = x => (a.tempCubic(tf, x + e, 1.5, 0, false) - a.tempCubic(tf, x - e, 1.5, 0, false)) / (2 * e);
+  const kink = Math.abs(slope(2 - 0.001) - slope(2 + 0.001));
+  ok(exact && kink < 0.5, "temperature colours pass through each forecast point and bend smoothly across grid lines",
+     (exact ? "exact at the points" : "misses a point") + ", slope change at a grid line " + kink.toFixed(3));
+  ok((a.tempGradient().match(/rgb\(/g) || []).length === a.TEMP_STOPS.length, "the temperature legend is drawn from the same colours as the map");
   ok(/^rgba\(\d+,\d+,\d+,0\.6\)$/.test(a.speedColor(12)) && a.speedColor(-5) === a.speedColor(0) && a.speedColor(999) === a.speedColor(40),
      "wind colour scale clamps at both ends");
 }
@@ -442,6 +450,19 @@ async function stateTests(){
   res.classList.add("open"); se.value = "Lond"; se.dispatchEvent(new p.win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   ok(!hiddenPick && !picked, "Enter in search never jumps to a hidden or older result", (hiddenPick ? "hidden list picked" : "") + (picked ? " older list picked" : ""));
   res.replaceChildren(); res.classList.remove("open"); se.value = "";
+
+  // the globe's temperature image is solid right to the rim, so the clipped edge is one clean curve
+  const tb = p.$('#layers button[data-l="temp"]'); tb.click(); await sleep(600);
+  const gi = a.globeLayerImage, gd = gi.getContext("2d").getImageData(0, 0, gi.width, gi.height).data;
+  let holes = 0;
+  for (let k = 0; k < 64; k++){
+    // texels straddling the rim (their centres just outside it): the ones the old image left empty
+    const ang = k / 64 * Math.PI * 2, x = Math.floor((0.5 + 0.502 * Math.cos(ang)) * gi.width), y = Math.floor((0.5 + 0.502 * Math.sin(ang)) * gi.height);
+    if (x < 0 || y < 0 || x >= gi.width || y >= gi.height) continue;
+    if (gd[(y * gi.width + x) * 4 + 3] < 40) holes++;
+  }
+  ok(holes === 0, "the globe's temperature colours reach all the way to the rim", holes + " of 64 rim points empty");
+  tb.click();
 
   play.click(); await sleep(200);
   const tq = Math.floor((Date.now() + 5 * 3600e3) / 900000) * 900000;

@@ -491,6 +491,7 @@ try{
 const $ = s => document.querySelector(s);
 const clamp = (v,a,b) => v<a?a:(v>b?b:v);
 const lerp = (a,b,t) => a+(b-a)*t;
+const smooth = (e0,e1,x) => { const t = clamp((x-e0)/(e1-e0),0,1); return t*t*(3-2*t); };
 const TAU = Math.PI*2, D2R = Math.PI/180;
 const normLon = l => ((l+180)%360+360)%360-180;
 
@@ -894,17 +895,23 @@ for (let i=0;i<256;i++){
 }
 const speedColor = s => LUT[clamp(Math.round(s/40*255),0,255)];
 
-/* temperature palette: -30°C .. +45°C */
+/* temperature palette: -30°C .. +45°C. Every stop is bright enough to read over the dark map and the
+   night globe (the old dark violet and olive went muddy there); freezing sits where blue turns to teal.
+   The legend's bar is built from these same stops. */
 const TEMP_STOPS = [
-  [-30, 43, 30, 94],
-  [-15, 39, 75,159],
-  [ -5, 47,143,191],
-  [  5, 53,183,138],
-  [ 15,168,201, 90],
-  [ 25,232,184, 58],
-  [ 35,232,106, 42],
-  [ 45,201, 42, 94],
+  [-30,150, 95,215],
+  [-20, 95,105,235],
+  [-10, 65,150,245],
+  [  0, 60,200,225],
+  [ 10, 85,205,140],
+  [ 18,185,215, 80],
+  [ 25,245,200, 70],
+  [ 32,250,135, 55],
+  [ 38,235, 70, 65],
+  [ 45,200, 40,120],
 ];
+const TEMP_MIN = -30, TEMP_MAX = 45;
+const TEMP_ALPHA = 0.52;          // strong enough to read as colour, light enough for coastlines and wind to show
 const TEMP_LUT = [];
 for (let i=0;i<256;i++){
   const s = -30 + i/255*75;
@@ -913,6 +920,30 @@ for (let i=0;i<256;i++){
   TEMP_LUT.push([Math.round(lerp(a[1],b[1],t)),Math.round(lerp(a[2],b[2],t)),Math.round(lerp(a[3],b[3],t))]);
 }
 const tempColor = c => TEMP_LUT[clamp(Math.round((c+30)/75*255),0,255)];
+const tempGradient = () => "linear-gradient(90deg,"+TEMP_STOPS.map(([c,r,g,b])=>
+  `rgb(${r},${g},${b}) ${((c-TEMP_MIN)/(TEMP_MAX-TEMP_MIN)*100).toFixed(1)}%`).join(",")+")";
+
+/* temperature for the colour layers: Catmull-Rom across the forecast grid, so colours flow smoothly
+   through each grid point instead of creasing into diamonds along the grid lines the way straight-line
+   blending does. fx, fy are grid coordinates; wrap joins the last column to the first (the globe's grid). */
+const crw = t => [((-t+2)*t-1)*t/2, ((3*t-5)*t*t+2)/2, ((-3*t+4)*t+1)*t/2, (t-1)*t*t/2];
+function tempCubic(f, fx, fy, tMs, wrap){
+  const th = clamp((tMs/1000-f.t0)/3600, 0, f.hours.length-1.001);
+  const h0 = Math.floor(th), h1 = Math.min(h0+1, f.hours.length-1), tt = th-h0;
+  const A = f.hours[h0].tp, B = f.hours[h1].tp, C = f.cols, R = f.rows;
+  const xi = Math.floor(fx), yi = Math.floor(fy), wx = crw(fx-xi), wy = crw(fy-yi);
+  let va = 0, vb = 0;
+  for (let m=0;m<4;m++){
+    const y = clamp(yi-1+m, 0, R-1)*C;
+    let ra = 0, rb = 0;
+    for (let k=0;k<4;k++){
+      const x = wrap ? ((xi-1+k)%C+C)%C : clamp(xi-1+k, 0, C-1);
+      ra += A[y+x]*wx[k]; rb += B[y+x]*wx[k];
+    }
+    va += ra*wy[m]; vb += rb*wy[m];
+  }
+  return lerp(va, vb, tt);
+}
 
 /* precipitation palette: 0 .. 10+ mm/h, alpha ramps with intensity */
 const RAIN_STOPS = [
@@ -941,8 +972,9 @@ off.width = LW; off.height = LH;
 const octx = off.getContext("2d");
 let layerLons = new Float64Array(LW), layerLats = new Float64Array(LH);
 function layerGeom(){
-  for (let i=0;i<LW;i++) layerLons[i] = toWorld(i/(LW-1)*W, H/2).lon;
-  for (let j=0;j<LH;j++) layerLats[j] = toWorld(W/2, j/(LH-1)*H).lat;
+  // sample at each texel's centre: that is where drawImage puts it when the image is stretched to the screen
+  for (let i=0;i<LW;i++) layerLons[i] = toWorld((i+0.5)/LW*W, H/2).lon;
+  for (let j=0;j<LH;j++) layerLats[j] = toWorld(W/2, (j+0.5)/LH*H).lat;
 }
 function renderLayer(){
   lctx.clearRect(0,0,W,H);
@@ -956,8 +988,13 @@ function renderLayer(){
       const s = sampleAt(layerLons[i], lat, displayTime);
       let r=0,g=0,b=0,a=0;
       if (show.temp){
-        const c = tempColor(s.tp);
-        r=c[0]; g=c[1]; b=c[2]; a=0.34;
+        let lo = layerLons[i];
+        while (lo < field.lon0) lo += 360;
+        while (lo > field.lon0+field.span) lo -= 360;
+        const fx = clamp((lo-field.lon0)/field.span*(field.cols-1), 0, field.cols-1);
+        const fy = clamp((field.latN-lat)/Math.max(1e-6, field.latN-field.latS)*(field.rows-1), 0, field.rows-1);
+        const c = tempColor(tempCubic(field, fx, fy, displayTime, false));
+        r=c[0]; g=c[1]; b=c[2]; a=TEMP_ALPHA;
       }
       if (show.rain && s.pr > 0.02){
         const c = rainColor(s.pr);
@@ -1431,8 +1468,8 @@ function buildLegend(){
     "linear-gradient(90deg,#3b5a8c,#40a0c8,#50dcbe,#a0e678,#fadc5a,#ff8c3c,#ff4678)",
     [0, Math.round(10*u.f), Math.round(20*u.f), Math.round(30*u.f)+"+"]);
   if (sh.temp) html += sec("temperature · "+tu.s,
-    "linear-gradient(90deg,#2b1e5e,#274b9f,#2f8fbf,#35b78a,#a8c95a,#e8b83a,#e86a2a,#c92a5e)",
-    [-30,-10,10,30,45].map(c=>Math.round(tu.f(c))+"°"));
+    tempGradient(),
+    [-30,-5,20,45].map(c=>Math.round(tu.f(c))+"°"));   // evenly spaced values, so each label sits on its colour (four fit a phone)
   if (sh.rain) html += sec("precipitation · mm/h",
     "linear-gradient(90deg,rgba(70,120,210,.15),#3c96eb,#5fc3ff,#afe6ff,#f0faff)",
     ["0","0.5","2","5","10+"]);
@@ -2113,16 +2150,23 @@ function drawGlobeLayer(){
   for (let j=0;j<GL;j++){
     const Y=1-2*(j+0.5)/GL;
     for (let i=0;i<GL;i++){
-      const X=2*(i+0.5)/GL-1, dd=X*X+Y*Y;
-      if (dd>=1) continue;                       // off the disc: stays transparent
+      let X=2*(i+0.5)/GL-1, Y2=Y, dd=X*X+Y2*Y2;
+      if (dd>1.06) continue;                     // well off the disc: stays transparent
+      // texels on or just past the rim take the colour at the rim, so the scaled-up image is solid right
+      // to the edge and the clip below draws one clean curve (left transparent they made a stepped, faded rim)
+      const rr=Math.sqrt(dd);
+      if (rr>0.998){ X*=0.998/rr; Y2*=0.998/rr; dd=0.998*0.998; }
       const Z=Math.sqrt(1-dd);
-      const lat=Math.asin(clamp(Z*sl0+Y*cl0,-1,1))/D2R;
-      const lon=gview.lon0+Math.atan2(X, Z*cl0-Y*sl0)/D2R;
+      const lat=Math.asin(clamp(Z*sl0+Y2*cl0,-1,1))/D2R;
+      const lon=gview.lon0+Math.atan2(X, Z*cl0-Y2*sl0)/D2R;
       const s=sampleG(lon,lat,displayTime);
       let r=0,g=0,b=0,a=0;
       if (show.temp){
-        const c=tempColor(s.tp);
-        r=c[0]; g=c[1]; b=c[2]; a=0.42;
+        const fx=(((lon+180)%360+360)%360)/360*gfield.cols;
+        const fy=clamp((gfield.latN-lat)/(gfield.latN-gfield.latS)*(gfield.rows-1),0,gfield.rows-1);
+        const c=tempColor(tempCubic(gfield, fx, fy, displayTime, true));
+        // a little lighter towards the limb, like the atmosphere thinning the view there
+        r=c[0]; g=c[1]; b=c[2]; a=(TEMP_ALPHA+0.06)*(1-0.35*smooth(0.75,1,rr));
       }
       if (show.rain && s.pr>0.02){
         const c=rainColor(s.pr);
@@ -2697,6 +2741,7 @@ window.aeolus = {
   get show(){ return {...show}; }, get globe(){ return { cx:GCX, cy:GCY, r:globeR(), lon:gview.lon0, lat:gview.lat0 }; },
   get view(){ return {...view}; }, get size(){ return { W, H }; },
   parseLink, formatLink, get link(){ return formatLink(viewState()); },
+  tempCubic, tempGradient, TEMP_STOPS, globeLayerImage: goff,
   get cities(){ return cityXYZB.length / 4; }, get citySource(){ return citySource; }, get nightSource(){ return nightReady ? "Black Marble" : "dots"; },
   pulseAt, PULSE_DEPTH,
   get pointers(){ return pointers.size; }, get frameErrs(){ return frameErrs; }, get cinema(){ return cinema; }, get time(){ return displayTime; },
