@@ -1771,7 +1771,7 @@ sizeCanvases();
 initParticles();
 initRain();
 buildLegend();
-fetchField();
+setMode("globe");              // open on the night globe; the flat map's wind loads when you switch to it
 requestAnimationFrame(frame);
 setInterval(()=>{                                                       // keep the atmosphere fresh
   if (document.hidden) return;
