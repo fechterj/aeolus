@@ -4,6 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Aeolus — the living wind</title>
+<meta name="description" content="A live map of the wind, temperature and rain across the world, on a night globe drawn from the current forecast.">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob: https://server.arcgisonline.com; connect-src 'self' https://api.open-meteo.com https://geocoding-api.open-meteo.com https://api.bigdatacloud.net; base-uri 'none'; form-action 'none'">
+<meta name="theme-color" content="#06090f">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Aeolus — the living wind">
+<meta property="og:description" content="A live map of the wind, temperature and rain across the world, on a night globe drawn from the current forecast.">
+<meta property="og:url" content="https://fechterj.github.io/aeolus/">
+<meta property="og:image" content="https://fechterj.github.io/aeolus/og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230a1222'/%3E%3Cpath d='M8 26c12-8 20 6 30-1s12-9 18-6M10 40c10-6 18 5 28 0s10-7 16-5' fill='none' stroke='%236ee7ff' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
   :root{
     --bg:#06090f;
@@ -292,7 +304,7 @@
   <button id="zout" title="Zoom out (−)">−</button>
 </div>
 
-<div id="attr">tiles © <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> · HERE · Garmin · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OSM</a> · data <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a></div>
+<div id="attr">tiles © <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> · HERE · Garmin · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OSM</a> · data <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> · outlines Natural Earth</div>
 <div id="toast" class="glass"></div>
 
 <div id="loader">
@@ -306,7 +318,7 @@
   <div class="card glass">
     <button class="close">✕</button>
     <h2>YOUR <span>SKIES</span></h2>
-    <p class="gsub">Every capture is kept here, on this device. Cinema mode collects a frame every two forecast hours while it plays.</p>
+    <p class="gsub">Every capture is kept here, on this device. Cinema mode collects a frame every two forecast hours while it plays, and keeps the newest 96.</p>
     <div id="galgrid"></div>
     <div id="galempty">No skies yet. Press <b>⤓ capture</b>, or run <b>⛶ cinema</b> and let the atmosphere fill this shelf.</div>
     <div class="galfoot"><button id="galclear">clear all</button><span id="galcount"></span></div>
@@ -366,13 +378,20 @@ const normLon = l => ((l+180)%360+360)%360-180;
    A caller's own abort still surfaces as AbortError; a timeout surfaces as TimeoutError. */
 function fetchT(url, opts={}, ms=20000){
   const ac = new AbortController();
-  const t = setTimeout(()=>ac.abort(new DOMException("timed out","TimeoutError")), ms);
+  let timedOut = false;
+  const t = setTimeout(()=>{ timedOut = true; ac.abort(); }, ms);
   if (opts.signal){
     if (opts.signal.aborted) ac.abort();
     else opts.signal.addEventListener("abort", ()=>ac.abort(), {once:true});
   }
-  return fetch(url, {...opts, signal:ac.signal}).finally(()=>clearTimeout(t));
+  return fetch(url, {...opts, signal:ac.signal}).then(
+    r=>{ clearTimeout(t); return r; },
+    e=>{ clearTimeout(t);                      // older Safari reports every abort as AbortError
+         if (timedOut){ const te = new Error("timed out"); te.name = "TimeoutError"; throw te; }
+         throw e; });
 }
+/* a step that may never answer (IndexedDB can hang on some phones) must not block the page */
+const within = (p, ms, fallback) => Promise.race([p, new Promise(r=>setTimeout(()=>r(fallback), ms))]);
 
 /* forecast cache (IndexedDB, its own database): a reload inside half an hour costs no API calls,
    and a rate-limited visit can still show the last forecast it was sent */
@@ -388,7 +407,7 @@ function cacheOpen(){
   });
   return cacheDBp;
 }
-async function cacheGet(k){
+async function cacheGetRaw(k){
   try{
     const db = await cacheOpen();
     return await new Promise(res=>{
@@ -398,6 +417,8 @@ async function cacheGet(k){
     });
   }catch{ return null; }
 }
+/* the cache is a convenience: if the browser's storage doesn't answer quickly, go to the network */
+function cacheGet(k){ return within(cacheGetRaw(k), 1500, null); }
 async function cachePut(k, field){
   try{
     const db = await cacheOpen();
@@ -1241,9 +1262,14 @@ searchEl.addEventListener("input", ()=>{
       if (!j.results || !j.results.length){ resultsEl.classList.remove("open"); return; }
       for (const place of j.results){
         const b = document.createElement("button");
-        const flag = place.country_code ? String.fromCodePoint(...[...place.country_code.toUpperCase()].map(c=>0x1F1A5+c.charCodeAt(0))) : "";
-        b.innerHTML = `<div>${flag} ${place.name}</div><div class="sub">${[place.admin1,place.country].filter(Boolean).join(" · ")}</div>`;
+        const flag = /^[A-Za-z]{2}$/.test(place.country_code||"") ? String.fromCodePoint(...[...place.country_code.toUpperCase()].map(c=>0x1F1A5+c.charCodeAt(0))) : "";
+        const l1 = document.createElement("div"), l2 = document.createElement("div");
+        l1.textContent = (flag ? flag+" " : "") + place.name;      // text, never markup: this comes from a third party
+        l2.className = "sub";
+        l2.textContent = [place.admin1,place.country].filter(Boolean).join(" · ");
+        b.append(l1, l2);
         b.addEventListener("click", ()=>{
+          if (!isFinite(place.longitude) || !isFinite(place.latitude)) return;
           view.lon = place.longitude; view.lat = place.latitude; view.zoom = 6;
           gview.lon0 = place.longitude; gview.lat0 = clamp(place.latitude,-85,85);
           resultsEl.classList.remove("open"); searchEl.value = place.name; searchEl.blur();
@@ -1347,22 +1373,12 @@ async function loadLand(){
   if (landFeats || landLoading) return;
   landLoading = true;
   try{
-    let gj = null;
-    try{                                           // a bad cached copy is thrown away, not trusted forever
-      const cached = localStorage.getItem("aeolus-land");
-      if (cached){
-        gj = JSON.parse(cached);
-        if (!gj || !Array.isArray(gj.features) || !gj.features.length) gj = null;
-      }
-    }catch{ gj = null; }
-    if (!gj){
-      try{ localStorage.removeItem("aeolus-land"); }catch{}
-      const r = await fetchT("https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json", {}, 20000);
-      if (!r.ok) throw new Error("HTTP "+r.status);
-      gj = await r.json();
-      if (!gj || !Array.isArray(gj.features) || !gj.features.length) throw new Error("bad land");
-      try{ localStorage.setItem("aeolus-land", JSON.stringify(gj)); }catch{}
-    }
+    try{ localStorage.removeItem("aeolus-land"); }catch{}   // older versions kept a copy here
+    // Natural Earth 1:110m country outlines (public domain), shipped beside the page
+    const r = await fetchT("land.geo.json", {}, 20000);
+    if (!r.ok) throw new Error("HTTP "+r.status);
+    const gj = await r.json();
+    if (!gj || !Array.isArray(gj.features) || !gj.features.length) throw new Error("bad land");
     const feats = [];
     const ring3 = ring => ring.map(([lo,la])=>{
       const cl = Math.cos(la*D2R);
@@ -1748,6 +1764,14 @@ async function galClear(){
     tx.oncomplete=res; tx.onerror=()=>rej(tx.error);
   });
 }
+/* cinema frames are kept to the newest GAL_AUTO_MAX; captures you take yourself are never pruned */
+const GAL_AUTO_MAX = 96;
+async function galPrune(){
+  try{
+    const autos=(await galAll()).filter(r=>r.auto).sort((a,b)=>b.saved-a.saved);
+    for (const r of autos.slice(GAL_AUTO_MAX)) await galDel(r.id);
+  }catch{}
+}
 const canvasToBlob=(c,type,q)=>new Promise(r=>c.toBlob(r,type,q));
 async function saveSky(c, auto){
   try{
@@ -1759,6 +1783,7 @@ async function saveSky(c, auto){
     const rec={ id:Date.now()+"-"+Math.random().toString(36).slice(2,7),
       saved:Date.now(), when:displayTime, lon:ll.lon, lat:ll.lat, mode, auto:!!auto, blob, thumb };
     await galPut(rec);
+    if (auto) galPrune();
     return rec;
   }catch{ return null; }
 }
@@ -1912,6 +1937,18 @@ function capture(){
   }
 }
 $("#capbtn").addEventListener("click", capture);
+
+/* ---------------- safety net ---------------- */
+/* never sit on the loading screen: say what went wrong instead */
+function startupProblem(msg){
+  const l = $("#loader");
+  if (l.classList.contains("gone")) return;
+  l.classList.add("gone");
+  showToast(msg, ()=>location.reload());
+}
+addEventListener("error", e=>startupProblem("Aeolus hit a problem starting: "+(e.message||"unknown error")));
+addEventListener("unhandledrejection", e=>startupProblem("Aeolus hit a problem starting: "+((e.reason&&e.reason.message)||e.reason||"unknown error")));
+setTimeout(()=>startupProblem("The wind data is taking too long to arrive."), 30000);
 
 /* ---------------- init ---------------- */
 sizeCanvases();
