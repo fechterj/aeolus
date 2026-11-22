@@ -225,6 +225,7 @@
   #help .card{max-height:86vh;max-height:86dvh;overflow:auto}
   #gallery .card{max-height:86dvh}
   body.cinema #dock{opacity:0;pointer-events:none}
+  body.cinema header>*,body.cinema #dock>*,body.cinema #legend,body.cinema #zoomctl,body.cinema #timebar{pointer-events:none!important}
 
   /* ============ phone layout ============
      body.mobile is set by placeChrome(), which also moves the time bar, layers and modes into #dock.
@@ -317,6 +318,9 @@
   body.mobile #pnote,body.mobile #sparklabel{font-size:11.5px}
   body.mobile #galgrid .meta{font-size:12px}
   body.mobile #legend .title,body.mobile #legend .labels{font-size:10.5px}
+  @media (orientation:landscape){
+    body.mobile #zoomctl{bottom:calc(var(--dock-h,170px) + 6px)}   /* last, so it wins over the upright rule */
+  }
 </style>
 </head>
 <body>
@@ -438,13 +442,13 @@
       <li><b>Click anywhere</b> for that point's wind, gusts, temperature and 24-hour outlook</li>
       <li><b>▶ / space</b> plays time forward — watch weather systems travel</li>
       <li><b>Slider</b> scrubs up to 3 days of forecast · <b>NOW</b> returns to the present</li>
-      <li><b>Layers</b> — toggle wind streamlines, temperature field, and live rain under the brand</li>
+      <li><b>Layers</b> — toggle wind streamlines, the temperature field and live rain</li>
       <li><b>Silk</b> — long-exposure mode: the wind paints itself into ribbons of light</li>
       <li><b>Cinema</b> — everything disappears and the atmosphere performs · <b>Capture</b> saves it as a poster</li>      <li><b>Globe</b> (G) — the same wind, temperature and rain wrapping a rotating night Earth, city lights and all</li>
       <li><b>Gallery</b> — every sky you capture is kept on this device; cinema collects them as it plays</li>
       <li><b>Search</b> flies to any place on Earth</li>
       <li><b>Keyboard</b> — arrow keys move the view (Shift for bigger steps) · <b>Enter</b> shows the weather at the centre</li>
-      <li>Every streamline is real air: ~3,000 particles riding the actual forecast wind field, colored by speed</li>
+      <li>Every streamline is real air: thousands of particles riding the actual forecast wind field, colored by speed</li>
     </ul>
     <div class="credit">
       Wind data: Open-Meteo blended forecast models (ICON · GFS · ECMWF), updated hourly, free &amp; open.
@@ -546,11 +550,12 @@ const ZMIN = 1.6, ZMAX = 9;
 let W = innerWidth, H = innerHeight, DPR = Math.min(devicePixelRatio||1, 2);
 /* quality steps down by itself on a device that can't keep up:
    0 full · 1 no glow · 2 fewer particles, no cinema frames · 3 also one canvas pixel per CSS pixel */
-let quality = 0, perfN = 0, perfSum = 0, perfHold = 0;
+let quality = 0, perfN = 0, perfSum = 0, perfWork = 0, perfHold = 0, lastWork = 0;
 /* reduced motion: the wind is drawn as one still long exposure instead of an animation */
 const rmq = matchMedia("(prefers-reduced-motion: reduce)");
 let reduced = rmq.matches, stillDirty = true, stillAt = 0;
-let glFrame = 0, glValid = false;
+let glFrame = 0, glValid = false, glKey = "";
+let followNow = true, followAt = 0;       // the shown time tracks the real clock until you scrub or play
 let field = null;              // current wind grid
 let displayTime = Date.now();  // ms, the moment being shown
 let playing = false;
@@ -628,7 +633,7 @@ function getTile(z,x,y){
     t = { img: new Image(), ok:false };
     t.img.crossOrigin = "anonymous";
     t.img.onload = ()=>{ t.ok = true; mapDirty = true; };
-    t.img.onerror = ()=>{ t.ok = false; };
+    t.img.onerror = ()=>{ t.ok = false; setTimeout(()=>{ if (tiles.get(k) === t){ tiles.delete(k); mapDirty = true; } }, 5000); };
     t.img.src = `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/${z}/${y}/${x}`;
     tiles.set(k,t);
     if (tiles.size > 900){          // modest cache eviction
@@ -671,6 +676,8 @@ function drawMap(){
 /* ---------------- wind field ---------------- */
 const GRID_COLS = 18, GRID_ROWS = 12;
 let fieldAbort = null, fieldTimer = null, fieldSeq = 0;
+let fieldBlockedUntil = 0, globeBlockedUntil = 0;      // set by a rate-limit answer; no requests before then
+const isStale = f => !f || !f.at || Date.now()-f.at > FIELD_TTL;
 
 function scheduleField(delay=450){
   clearTimeout(fieldTimer);
@@ -681,8 +688,10 @@ function fieldCoversView(){
   if (!field || Math.abs(view.zoom - field.viewZoom) > 0.75) return false;
   const b = viewBounds();
   const shift = Math.round((view.lon - (field.lon0+field.span/2))/360)*360;
-  return b.west+shift >= field.lon0 && b.east+shift <= field.lon0+field.span
-      && b.north <= field.latN && b.south >= field.latS;
+  // the grid never reaches past 84 degrees or wider than 350: a view beyond that is as covered as it can get
+  const north = Math.min(b.north, 84), south = Math.max(b.south, -84);
+  const lonOK = field.span >= 349 || (b.west+shift >= field.lon0 && b.east+shift <= field.lon0+field.span);
+  return lonOK && north <= field.latN+1e-6 && south >= field.latS-1e-6;
 }
 function applyField(f){
   field = f;
@@ -703,6 +712,7 @@ async function flatFromCache(seq, maxAge){
   return true;
 }
 async function fetchField(force){
+  if (Date.now() < fieldBlockedUntil) return;
   const seq = ++fieldSeq;
   if (fieldAbort) fieldAbort.abort();
   fieldAbort = new AbortController();
@@ -736,6 +746,7 @@ async function fetchField(force){
     if (res.status === 429){
       // free-tier quota: wait as long as the service says, and show the last forecast meanwhile
       const plan = await rateLimitPlan(res);
+      fieldBlockedUntil = Date.now() + (plan.wait || 3*3600*1000) - 1000;
       if (seq !== fieldSeq) return;
       $("#loader").classList.add("gone");
       if (!field) await flatFromCache(seq, FIELD_STALE);
@@ -748,7 +759,7 @@ async function fetchField(force){
     let data = await res.json();
     if (seq !== fieldSeq) return;
     if (!Array.isArray(data)) data = [data];
-    if (data.length !== GRID_COLS*GRID_ROWS || !data[0].hourly) throw new Error("bad grid");
+    if (data.length !== GRID_COLS*GRID_ROWS || !data[0].hourly || !Array.isArray(data[0].hourly.time) || data[0].hourly.time.length < 2) throw new Error("bad grid");
     const times = data[0].hourly.time;               // unix seconds, GMT
     const nh = times.length;
     const hours = [];
@@ -767,7 +778,7 @@ async function fetchField(force){
       }
     }
     const f = { lon0, span, latN, latS, cols:GRID_COLS, rows:GRID_ROWS, hours,
-                t0: times[0], t1: times[nh-1], viewZoom: view.zoom };
+                t0: times[0], t1: times[nh-1], viewZoom: view.zoom, at: Date.now() };
     applyField(f);
     hideToast();
     cachePut("flat", f);
@@ -998,6 +1009,7 @@ function stepParticles(){
       const dist = Math.hypot(dx,dy);
       if (dist > 3.6){ const k = 3.6/dist; dx*=k; dy*=k; dLon*=k; dLat*=k; }
       p.lon += dLon; p.lat += dLat; p.age++;
+      if (p.lat>85||p.lat<-85){ spawn(p); continue; }
       if (dist < 0.02) continue;                 // dead calm: hold, shimmer faintly
       fctx.strokeStyle = silk ? speedColor(w.s).replace(/,0\.6\)$/, ",0.5)") : speedColor(w.s);
       fctx.beginPath();
@@ -1030,6 +1042,7 @@ function syncTimeUI(){
 }
 function setPlaying(v){
   playing = v;
+  if (v) followNow = false;
   playBtn.textContent = v ? "❚❚" : "▶";
   playBtn.setAttribute("aria-label", v ? "Pause forecast time" : "Play forecast time");
 }
@@ -1037,12 +1050,14 @@ playBtn.addEventListener("click", ()=>setPlaying(!playing));
 $("#nowbtn").addEventListener("click", ()=>{
   const f = activeField();
   displayTime = f ? clamp(Date.now(), f.t0*1000, f.t1*1000) : Date.now();
+  followNow = true;
   syncTimeUI();
 });
 slider.addEventListener("input", ()=>{
   const f = activeField();
   if (!f) return;
   displayTime = (f.t0 + (+slider.value)*3600)*1000;
+  followNow = false;
   syncTimeUI();
 });
 /* keyboard travel: the same moves as dragging */
@@ -1107,7 +1122,7 @@ addEventListener("keydown", e=>{
   if (e.key === "g" || e.key === "G") setMode(mode==="globe"?"flat":"globe");
   if (e.key === "Escape"){
     if ($("#lightbox").classList.contains("open")) closeLightbox();
-    else if ($("#gallery").classList.contains("open")) dlgClose($("#gallery"));
+    else if ($("#gallery").classList.contains("open")) closeGallery();
     else { closePanel(); dlgClose($("#help")); }
   }
 });
@@ -1115,13 +1130,14 @@ addEventListener("keydown", e=>{
 /* ---------------- main loop ---------------- */
 /* frame-time watch: 90 real frames averaging under about 36 fps drops one quality step.
    Frames over 250 ms are a throttled or hidden tab, not a slow device, and are ignored. */
-function perfSample(rawDt){
+function perfSample(rawDt, workMs){
   if (rawDt > 0.25 || document.hidden || performance.now() < perfHold) return;
-  perfSum += rawDt; perfN++;
+  perfSum += rawDt; perfWork += workMs; perfN++;
   if (perfN < 90) return;
-  const avg = perfSum/perfN;
-  perfN = 0; perfSum = 0;
-  if (avg > 0.028 && quality < 3) setQuality(quality+1);
+  const avg = perfSum/perfN, work = perfWork/perfN;
+  perfN = 0; perfSum = 0; perfWork = 0;
+  // a browser holding a steady 30 fps to save power is not a slow device: also require real work per frame
+  if ((avg > 0.045 || (avg > 0.028 && work > 9)) && quality < 3) setQuality(quality+1);
 }
 function setQuality(q){
   quality = q;
@@ -1140,18 +1156,22 @@ function stillFrame(now, step, f){
 }
 if (rmq.addEventListener) rmq.addEventListener("change", e=>{ reduced = e.matches; clearTrails(); });
 let lastT = performance.now();
-function frame(now){
+function frameBody(now){
   const rawDt = (now-lastT)/1000, dt = Math.min(rawDt, 0.1); lastT = now;
   if (!mapC.width || !mapC.height){            // window not laid out yet: wait, don't die
     if (innerWidth && innerHeight){ sizeCanvases(); initParticles(); initRain(); }
-    requestAnimationFrame(frame); return;
+    return;
   }
   const af = mode==="globe" ? gfield : field;
-  if (!reduced) perfSample(rawDt);
+  if (!reduced) perfSample(rawDt, lastWork);
   if (playing && af){
     displayTime += dt*3600*1000*0.85;          // ~0.85 forecast-hours per second
     if (displayTime > af.t1*1000) displayTime = af.t0*1000;
     syncTimeUI();
+  } else if (followNow && af && now-followAt > 30000){
+    followAt = now;
+    const t = clamp(Date.now(), af.t0*1000, af.t1*1000);
+    if (Math.abs(t-displayTime) > 60000){ displayTime = t; syncTimeUI(); }
   }
   if (mode==="globe"){
     if (pointers.size===0 && !silk && !reduced){  // slow idle rotation (held still for long exposures)
@@ -1177,7 +1197,14 @@ function frame(now){
       if (autoCount < 24 && quality < 2){ autoCount++; saveSky(buildCapture(Math.min(1, 1280/W)), true); }
     }
   }
-  requestAnimationFrame(frame);
+}
+/* the loop itself: whatever happens inside one frame, the next one is always asked for */
+let frameErrs = 0;
+function frame(now){
+  const t0 = performance.now();
+  try{ frameBody(now); }
+  catch(e){ if (frameErrs++ < 3) console.error(e); }
+  finally{ lastWork = performance.now()-t0; requestAnimationFrame(frame); }
 }
 
 /* ---------------- pan / zoom / click ---------------- */
@@ -1186,6 +1213,7 @@ let dragInfo = null, pinchDist = 0;
 fxC.style.pointerEvents = "none";
 mapC.style.touchAction = "none";
 mapC.addEventListener("pointerdown", e=>{
+  if (e.pointerType === "mouse" && e.button !== 0) return;   // right and middle clicks are not drags
   if (cinema){ setCinema(false); cinemaExitClick = true; }
   try{ mapC.setPointerCapture(e.pointerId); }catch{}      // capture is a nicety; never let it break a touch
   pointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
@@ -1251,6 +1279,15 @@ let clickTimer = null, cinemaExitClick = false;
 let lastTap = { t:0, x:0, y:0 }, lastDoubleTap = 0;
 mapC.addEventListener("pointerup", endPointer);
 mapC.addEventListener("pointercancel", endPointer);
+/* a context menu, an app switch or a lost window can swallow the "up": forget every pointer when that happens */
+function resetPointers(){ pointers.clear(); dragInfo = null; pinchDist = 0; }
+mapC.addEventListener("contextmenu", resetPointers);
+addEventListener("blur", resetPointers);
+document.addEventListener("visibilitychange", ()=>{
+  if (document.hidden){ resetPointers(); return; }
+  const f = activeField();                    // back after a while: do not show an old forecast as live
+  if (f && isStale(f)){ if (mode==="globe") fetchGlobeField(true); else fetchField(true); }
+});
 mapC.addEventListener("dblclick", e=>{
   e.preventDefault();
   if (performance.now()-lastDoubleTap < 600) return;   // already handled as a double-tap
@@ -1363,7 +1400,9 @@ const SKY = {0:"☀️ clear",1:"🌤 mostly clear",2:"⛅ partly cloudy",3:"☁
 const DIRS = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
 const dirName = d => DIRS[Math.round(((d%360)+360)%360/22.5)%16];
 
+let panelSeq = 0;
 async function openPanel(lon,lat){
+  const seq = ++panelSeq, current = ()=>seq === panelSeq;
   marker = {lon,lat}; mapDirty = true;       // marker keeps the raw longitude so it draws where you clicked
   const qlon = normLon(lon);                 // the services want -180..180, even after panning round the world
   panel.classList.add("open");
@@ -1371,47 +1410,48 @@ async function openPanel(lon,lat){
   $("#pcoords").textContent = `${lat.toFixed(2)}°, ${qlon.toFixed(2)}°`;
   $("#pspeed").innerHTML = "—";
   $("#pgust").textContent = $("#ptemp").textContent = $("#pdir").textContent = $("#psky").textContent = $("#prain").textContent = "—";
-  const u = unit();
   try{
     const url = "https://api.open-meteo.com/v1/forecast"
       + `?latitude=${lat.toFixed(3)}&longitude=${qlon.toFixed(3)}`
       + "&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,temperature_2m,weather_code,precipitation"
       + "&hourly=wind_speed_10m&wind_speed_unit=ms&forecast_days=2&timezone=GMT&timeformat=unixtime";
     const res = await fetchT(url, {}, 15000);
-    if (!marker || Math.abs(marker.lon-lon)>1e-6 || Math.abs(marker.lat-lat)>1e-6) return;   // superseded
+    if (!current()) return;                    // another point was opened, or the panel was closed
     if (res.status === 429){ $("#pname").textContent = "Point details are rate-limited right now"; return; }
     if (!res.ok) throw new Error("HTTP "+res.status);
     const d = await res.json();
     if (!d || !d.current || !d.hourly) throw new Error("bad point");
-    if (!marker || Math.abs(marker.lon-lon)>1e-6 || Math.abs(marker.lat-lat)>1e-6) return;   // superseded
+    if (!current()) return;                    // another point was opened, or the panel was closed
     panelData = d;
     renderPanel();
     // reverse geocode for a human name (best effort)
     try{
       const g = await fetchT(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${qlon}&localityLanguage=en`, {}, 10000);
+      if (!g.ok) throw new Error("HTTP "+g.status);
       const gj = await g.json();
-      if (marker && Math.abs(marker.lon-lon)<1e-6){
+      if (current()){
         const name = [gj.city||gj.locality, gj.principalSubdivision, gj.countryName]
           .filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).slice(0,2).join(", ");
         $("#pname").textContent = name || "Open water / remote land";
       }
-    }catch{ $("#pname").textContent = `${lat.toFixed(2)}°, ${qlon.toFixed(2)}°`; }
+    }catch{ if (current()) $("#pname").textContent = `${lat.toFixed(2)}°, ${qlon.toFixed(2)}°`; }
   }catch{
-    $("#pname").textContent = "Couldn't load this point";
+    if (current()) $("#pname").textContent = "Couldn't load this point";
   }
 }
 function renderPanel(){
   if (!panelData) return;
   const d = panelData, c = d.current, u = unit();
+  const fin = v => typeof v === "number" && isFinite(v);      // a missing reading shows as a dash, never as zero
   const spd = c.wind_speed_10m*u.f;
-  $("#pspeed").innerHTML = `${spd.toFixed(u.dec)}<small>${u.name}</small>`;
-  $("#pgust").textContent = (c.wind_gusts_10m*u.f).toFixed(u.dec)+" "+u.name;
+  $("#pspeed").innerHTML = fin(spd) ? `${spd.toFixed(u.dec)}<small>${u.name}</small>` : "—";
+  $("#pgust").textContent = fin(c.wind_gusts_10m) ? (c.wind_gusts_10m*u.f).toFixed(u.dec)+" "+u.name : "—";
   const tu = tempUnit();
-  $("#ptemp").textContent = Math.round(tu.f(c.temperature_2m))+tu.s;
-  $("#pdir").textContent = dirName(c.wind_direction_10m)+` (${Math.round(c.wind_direction_10m)}°)`;
+  $("#ptemp").textContent = fin(c.temperature_2m) ? Math.round(tu.f(c.temperature_2m))+tu.s : "—";
+  $("#pdir").textContent = fin(c.wind_direction_10m) ? dirName(c.wind_direction_10m)+` (${Math.round(c.wind_direction_10m)}°)` : "—";
   $("#psky").textContent = SKY[c.weather_code] || "—";
-  $("#prain").textContent = (c.precipitation ?? 0).toFixed(1)+" mm/h";
-  $("#compass svg").style.transform = `rotate(${(c.wind_direction_10m+180)%360}deg)`;
+  $("#prain").textContent = fin(c.precipitation) ? c.precipitation.toFixed(1)+" mm/h" : "—";
+  if (fin(c.wind_direction_10m)) $("#compass svg").style.transform = `rotate(${(c.wind_direction_10m+180)%360}deg)`;
   drawSpark(d);
 }
 function drawSpark(d){
@@ -1449,21 +1489,25 @@ function drawSpark(d){
 }
 function closePanel(){
   panel.classList.remove("open");
+  panelSeq++;
   marker = null; panelData = null; mapDirty = true;
 }
 panel.querySelector(".close").addEventListener("click", closePanel);
 
 /* ---------------- search ---------------- */
 const searchEl = $("#search"), resultsEl = $("#results");
-let searchTimer = null;
+let searchTimer = null, searchSeq = 0;
 searchEl.addEventListener("input", ()=>{
   clearTimeout(searchTimer);
   const q = searchEl.value.trim();
-  if (q.length < 2){ resultsEl.classList.remove("open"); return; }
+  if (q.length < 2){ searchSeq++; resultsEl.classList.remove("open"); return; }
   searchTimer = setTimeout(async ()=>{
+    const seq = ++searchSeq;
     try{
-      const r = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=5&language=en&format=json`);
+      const r = await fetchT(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=5&language=en&format=json`, {}, 8000);
+      if (!r.ok) throw new Error("HTTP "+r.status);
       const j = await r.json();
+      if (seq !== searchSeq || searchEl.value.trim() !== q) return;   // a newer search has taken over
       resultsEl.innerHTML = "";
       if (!j.results || !j.results.length){ resultsEl.classList.remove("open"); return; }
       for (const place of j.results){
@@ -1475,12 +1519,13 @@ searchEl.addEventListener("input", ()=>{
         l2.textContent = [place.admin1,place.country].filter(Boolean).join(" · ");
         b.append(l1, l2);
         b.addEventListener("click", ()=>{
-          if (!isFinite(place.longitude) || !isFinite(place.latitude)) return;
-          view.lon = place.longitude; view.lat = place.latitude; view.zoom = 6;
-          gview.lon0 = place.longitude; gview.lat0 = clamp(place.latitude,-85,85);
+          const plon = +place.longitude, plat = +place.latitude;
+          if (!Number.isFinite(plon) || !Number.isFinite(plat)) return;
+          view.lon = normLon(plon); view.lat = clamp(plat,-85,85); view.zoom = 6;
+          gview.lon0 = normLon(plon); gview.lat0 = clamp(plat,-85,85);
           resultsEl.classList.remove("open"); searchEl.value = place.name; searchEl.blur();
           onViewChanged(true); initParticles(); scheduleField(50);
-          openPanel(place.longitude, place.latitude);   // and show its weather, so the search ends somewhere
+          openPanel(normLon(plon), clamp(plat,-85,85));   // and show its weather, so the search ends somewhere
         });
         resultsEl.appendChild(b);
       }
@@ -1622,7 +1667,7 @@ function gunproject(px,py){
   const R=globeR(), X=(px-GCX)/R, Y=(GCY-py)/R, d=X*X+Y*Y;
   if (d>1) return null;
   const Z=Math.sqrt(1-d), l0=gview.lat0*D2R;
-  const lat=Math.asin(Z*Math.sin(l0)+Y*Math.cos(l0))/D2R;
+  const lat=Math.asin(clamp(Z*Math.sin(l0)+Y*Math.cos(l0),-1,1))/D2R;
   const lon=gview.lon0+Math.atan2(X, Z*Math.cos(l0)-Y*Math.sin(l0))/D2R;
   return { lon:((lon+180)%360+360)%360-180, lat };
 }
@@ -1748,6 +1793,7 @@ async function globeFromCache(seq, maxAge){
   return true;
 }
 async function fetchGlobeField(force){
+  if (Date.now() < globeBlockedUntil) return;
   const seq=++gSeq;
   if (gAbort) gAbort.abort();
   gAbort = new AbortController();
@@ -1768,6 +1814,7 @@ async function fetchGlobeField(force){
     const res=await fetchT(url,{signal:gAbort.signal});
     if (res.status===429){
       const plan=await rateLimitPlan(res);
+      globeBlockedUntil = Date.now() + (plan.wait || 3*3600*1000) - 1000;
       if (seq!==gSeq) return;
       $("#loader").classList.add("gone");
       if (!gfield) await globeFromCache(seq, FIELD_STALE);
@@ -1780,7 +1827,7 @@ async function fetchGlobeField(force){
     let data=await res.json();
     if (seq!==gSeq) return;
     if (!Array.isArray(data)) data=[data];
-    if (data.length!==cols*rows || !data[0].hourly) throw new Error("bad grid");
+    if (data.length!==cols*rows || !data[0].hourly || !Array.isArray(data[0].hourly.time) || data[0].hourly.time.length<2) throw new Error("bad grid");
     const times=data[0].hourly.time, nh=times.length, hours=[];
     for (let h=0;h<nh;h++) hours.push({ t:times[h],
       u:new Float32Array(data.length), v:new Float32Array(data.length),
@@ -1794,7 +1841,7 @@ async function fetchGlobeField(force){
         hours[h].tp[j]=tp[h]??0; hours[h].pr[j]=pr[h]??0;
       }
     }
-    const f={ lon0:-180, span:360, latN:84, latS:-84, cols, rows, hours, t0:times[0], t1:times[nh-1] };
+    const f={ lon0:-180, span:360, latN:84, latS:-84, cols, rows, hours, t0:times[0], t1:times[nh-1], at:Date.now() };
     applyGlobeField(f);
     hideToast();
     cachePut("globe", f);
@@ -1843,7 +1890,10 @@ const goctx = goff.getContext("2d");
 function drawGlobeLayer(){
   if (!gfield || (!show.temp && !show.rain)) return;
   const R=globeR(), cx=GCX, cy=GCY;
-  if (!(quality>=1 && (++glFrame & 1) && glValid)){   // on a struggling device, recompute every other frame
+  const glk = gview.lon0+"|"+gview.lat0+"|"+displayTime+"|"+show.temp+"|"+show.rain+"|"+gfield.at;
+  // unchanged view, time and layers: reuse the image. On a struggling device, also skip every other frame.
+  if (!(glValid && (glk === glKey || (quality>=1 && (++glFrame & 1))))){
+  glKey = glk;
   const img=goctx.createImageData(GL,GL), d=img.data;
   const l0=gview.lat0*D2R, sl0=Math.sin(l0), cl0=Math.cos(l0);
   for (let j=0;j<GL;j++){
@@ -1911,6 +1961,7 @@ function stepGlobe(){
     const dist=Math.hypot(dx,dy);
     if (dist>3.6){ const k=3.6/dist; dx*=k; dy*=k; dLon*=k; dLat*=k; }
     p.lon+=dLon; p.lat+=dLat; p.age++;
+    if (p.lat>88||p.lat<-88){ spawnG(p); continue; }   // past the pole the maths turns the wind around
     if (!show.wind||b.z<=0.02||dist<0.02) continue;
     gfx.strokeStyle=silk?speedColor(w.s).replace(/,0\.6\)$/,",0.5)"):speedColor(w.s);
     gfx.beginPath(); gfx.moveTo(a.x,a.y); gfx.lineTo(a.x+dx,a.y+dy); gfx.stroke();
@@ -1927,9 +1978,14 @@ function setMode(m){
   if (m==="globe"){
     gview.lon0 = ((view.lon+180)%360+360)%360-180;   // open on the part of the world you were looking at
     gview.lat0 = clamp(view.lat,-70,70);
-    loadLand(); if(!gfield) fetchGlobeField(); initGlobeParticles();
+    loadLand(); if (!gfield || isStale(gfield)) fetchGlobeField(); initGlobeParticles();
+  } else {
+    view.lon = gview.lon0; view.lat = clamp(gview.lat0,-85,85);   // and back: the map opens where the globe was pointing
+    onViewChanged(false); initParticles();
+    if (field && isStale(field)) fetchField(true); else scheduleField(100);
   }
-  else scheduleField(100);
+  const af = activeField();
+  if (af) displayTime = clamp(displayTime, af.t0*1000, af.t1*1000);
   syncTimeUI();
   buildLegend();
 }
@@ -1951,7 +2007,7 @@ async function galPut(rec){
   return new Promise((res,rej)=>{
     const tx=db.transaction("skies","readwrite");
     tx.objectStore("skies").put(rec);
-    tx.oncomplete=res; tx.onerror=()=>rej(tx.error);
+    tx.oncomplete=res; tx.onerror=()=>rej(tx.error); tx.onabort=()=>rej(tx.error);
   });
 }
 async function galAll(){
@@ -1992,6 +2048,7 @@ async function saveSky(c, auto){
     const t=document.createElement("canvas"); t.width=tw; t.height=th;
     t.getContext("2d").drawImage(c,0,0,tw,th);
     const [blob,thumb]=await Promise.all([canvasToBlob(c,"image/jpeg",0.88), canvasToBlob(t,"image/jpeg",0.7)]);
+    if (!blob || !thumb) return null;           // the browser could not encode it: store nothing
     const ll=centerLL();
     const rec={ id:Date.now()+"-"+Math.random().toString(36).slice(2,7),
       saved:Date.now(), when:displayTime, lon:ll.lon, lat:ll.lat, mode, auto:!!auto, blob, thumb };
@@ -2033,10 +2090,18 @@ function openLightbox(r){
   $("#lbcap").textContent=`${fmtPlace(r)} · ${d.toISOString().slice(0,16).replace("T"," ")} UTC · ${r.mode==="globe"?"night globe":"flat map"}${r.auto?" · cinema frame":""}`;
   dlgOpen($("#lightbox"), "#lbclose");
 }
-function closeLightbox(){ dlgClose($("#lightbox")); lbRec=null; }
+function closeLightbox(){
+  dlgClose($("#lightbox")); lbRec=null;
+  if (lbURL){ URL.revokeObjectURL(lbURL); lbURL=null; $("#lbimg").removeAttribute("src"); }
+}
+function closeGallery(){
+  dlgClose($("#gallery"));
+  galURLs.forEach(URL.revokeObjectURL); galURLs=[];
+  $("#galgrid").innerHTML="";
+}
 $("#galbtn").addEventListener("click", openGallery);
-$("#gallery .close").addEventListener("click", ()=>dlgClose($("#gallery")));
-$("#gallery").addEventListener("click", e=>{ if(e.target.id==="gallery") dlgClose($("#gallery")); });
+$("#gallery .close").addEventListener("click", ()=>closeGallery());
+$("#gallery").addEventListener("click", e=>{ if(e.target.id==="gallery") closeGallery(); });
 $("#lbclose").addEventListener("click", closeLightbox);
 $("#lightbox").addEventListener("click", e=>{ if(e.target.id==="lightbox") closeLightbox(); });
 $("#lbdown").addEventListener("click", ()=>{
@@ -2052,7 +2117,7 @@ $("#lbdown").addEventListener("click", ()=>{
 });
 $("#lbdel").addEventListener("click", async ()=>{
   if (!lbRec) return;
-  await galDel(lbRec.id);
+  try{ await galDel(lbRec.id); }catch{ showToast("Couldn't delete that sky."); return; }
   closeLightbox();
   openGallery();
 });
@@ -2064,7 +2129,7 @@ $("#galclear").addEventListener("click", async e=>{
     return;
   }
   delete b.dataset.arm; b.textContent="clear all";
-  await galClear();
+  try{ await galClear(); }catch{ showToast("Couldn't clear the gallery."); return; }
   openGallery();
 });
 
@@ -2081,6 +2146,7 @@ function setCinema(on){
   if (on === cinema) return;
   cinema = on;
   document.body.classList.toggle("cinema", on);
+  for (const el of [$("header"), dock, $("#timebar"), $("#zoomctl"), $("#legend"), $("#attr")]) el.inert = on;   // out of reach while hidden
   measureChrome();                            // cinema uses the whole screen
   $("#cinebtn").classList.toggle("on", on);
   $("#cinebtn").setAttribute("aria-pressed", on);
@@ -2146,12 +2212,14 @@ function capture(){
     const cv = buildCapture();
     const d = new Date(displayTime), ll = centerLL();
     const name = `aeolus-${d.toISOString().slice(0,10)}-${ll.lat.toFixed(1)}_${ll.lon.toFixed(1)}.png`;
-    const download = ()=>{
-      const a = document.createElement("a");
+    const download = ()=>cv.toBlob(blob=>{
+      if (!blob){ showToast("Couldn't export the canvas."); return; }
+      const a = document.createElement("a"), u = URL.createObjectURL(blob);
       a.download = name;
-      a.href = cv.toDataURL("image/png");
+      a.href = u;
       a.click();
-    };
+      setTimeout(()=>URL.revokeObjectURL(u), 30000);
+    }, "image/png");
     // on a phone the share sheet (save to photos, send to someone) beats a download nobody can find
     if (isMobile && navigator.canShare && navigator.share){
       cv.toBlob(async blob=>{
@@ -2162,7 +2230,7 @@ function capture(){
         }catch(e){ if (!e || e.name !== "AbortError") download(); }   // closing the sheet is not an error
       }, "image/png");
     } else download();
-    saveSky(cv, false).then(rec=>{
+    within(saveSky(cv, false), 5000, null).then(rec=>{
       showToast(rec ? "Saved your sky ✦ — also kept in your gallery" : "Saved your sky ✦");
     });
   }catch(e){
@@ -2199,7 +2267,8 @@ const movers = ["#timebar","#layers","#xp","#globebtn","#locate","#units","#attr
 let isMobile = null;
 let GCX = innerWidth/2, GCY = innerHeight/2, GRB = Math.min(innerWidth,innerHeight)*0.38;   // globe centre and base radius
 function placeChrome(){
-  const m = mobileMQ.matches;
+  const typing = isMobile !== null && document.activeElement === searchEl;   // keyboard up: keep the layout as it is
+  const m = typing ? isMobile : mobileMQ.matches;
   if (m !== isMobile){
     isMobile = m;
     document.body.classList.toggle("mobile", m);
@@ -2237,7 +2306,7 @@ if (window.ResizeObserver){
   ro.observe(dock); ro.observe($("header")); ro.observe($("#legend"));
 }
 searchEl.addEventListener("blur", ()=>setTimeout(()=>{          // keyboard gone: catch up if the window really changed
-  if (innerWidth !== W || innerHeight !== H) onResize();
+  if (innerWidth !== W || innerHeight !== H) onResize(); else placeChrome();
 }, 350));
 
 /* a small read-only handle for test.html and for poking at the page from the console */
@@ -2247,6 +2316,9 @@ window.aeolus = {
   get reduced(){ return reduced; }, get ready(){ return !!activeField(); },
   get show(){ return {...show}; }, get globe(){ return { cx:GCX, cy:GCY, r:globeR(), lon:gview.lon0, lat:gview.lat0 }; },
   get view(){ return {...view}; }, get size(){ return { W, H }; },
+  get pointers(){ return pointers.size; }, get cinema(){ return cinema; }, get time(){ return displayTime; },
+  get range(){ const f = activeField(); return f ? { t0:f.t0*1000, t1:f.t1*1000 } : null; },
+  get lats(){ const a = mode==="globe" ? gparts : parts; let lo = 90, hi = -90; for (const p of a){ if (p.lat<lo) lo=p.lat; if (p.lat>hi) hi=p.lat; } return { lo, hi }; },
 };
 
 /* ---------------- init ---------------- */

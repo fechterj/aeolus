@@ -30,7 +30,9 @@
 /* Open this page from the same server as index.html (it will not work from file://).
    It loads the real app in a frame at three screen sizes and checks what a person would notice:
    that everything fits, that controls are big enough to touch, and that touch, keyboard and dialogs work.
-   Results are also left in window.testResults. */
+   Results are also left in window.testResults.
+   Run it in a visible browser tab: a hidden or background tab is not told about size changes, so the
+   "turned and resized" checks fail there even though the app is fine. */
 const out = document.getElementById("out"), stage = document.getElementById("stage");
 const results = []; window.testResults = results;
 let group = "";
@@ -197,9 +199,13 @@ async function sizeTests(label, w, h, wantMobile){
   const m0 = a.mode;
   key(p.win, "g", { metaKey: true });
   ok(a.mode === m0, "Cmd+G is left to the browser");
+  const sl = p.$("#slider"); sl.value = sl.max; sl.dispatchEvent(new p.win.Event("input", { bubbles: true }));
   key(p.win, "g");
   ok(a.mode !== m0, "G switches between globe and flat map");
   key(p.win, "g");
+  const rg = a.range;
+  ok(!!rg && a.time >= rg.t0 && a.time <= rg.t1, "time stays inside the forecast after switching modes");
+  p.$("#nowbtn").click();
   const lon0 = a.globe.lon;
   key(p.win, "ArrowRight");
   ok(Math.abs(a.normLon(a.globe.lon - lon0) - 8) < 0.5, "right arrow turns the globe east", "moved " + a.normLon(a.globe.lon - lon0).toFixed(2) + "°");
@@ -212,7 +218,66 @@ async function sizeTests(label, w, h, wantMobile){
   ok(hr.t >= 0 && hr.b <= h + 1 && hr.l >= 0 && hr.r <= w + 1, "help fits on screen", [hr.l, hr.t, hr.r, hr.b].map(Math.round).join(","));
   key(p.win, "Escape");
   ok(!help.classList.contains("open") && p.doc.activeElement === hb, "Escape closes help and returns focus");
+
+  // cinema: what is hidden is out of reach
+  const pb = rect(p.$("#play"));
+  key(p.win, "c");
+  const under = p.doc.elementFromPoint(pb.l + pb.w / 2, pb.t + pb.h / 2);
+  ok(a.cinema && !(under && under.closest("button,input")), "cinema: hidden controls cannot be tapped", under ? under.tagName + "#" + under.id : "nothing there");
+  key(p.win, "x");
+  ok(!a.cinema, "cinema: any key returns");
+
+  // stray pointers
+  p.$("#map").dispatchEvent(new p.win.PointerEvent("pointerdown", { pointerId: 9, pointerType: "mouse", button: 2, clientX: 50, clientY: 300, bubbles: true }));
+  ok(a.pointers === 0, "a right-click does not leave a phantom finger on the map", "pointers=" + a.pointers);
+  touch(p, "pointerdown", 100, 300, 4);
+  p.win.dispatchEvent(new p.win.Event("blur"));
+  ok(a.pointers === 0, "losing the window lets go of held touches", "pointers=" + a.pointers);
+
+  await sleep(400);
+  const la = a.lats;
+  ok(la.lo >= -90 && la.hi <= 90, "wind particles stay between the poles", la.lo.toFixed(1) + "…" + la.hi.toFixed(1));
   return p;
+}
+
+/* ---------- one screen, turned and resized ---------- */
+async function reflowTests(){
+  section("One screen, turned and resized");
+  const p = await open(375, 812), a = p.win.aeolus;
+  await until(() => a.ready, 20000);
+  const setSize = async (w, h) => { p.f.width = w; p.f.height = h; await sleep(800); };
+  await setSize(812, 375);
+  const zc = rect(p.$("#zoomctl")), hd = rect(p.$("header")), dk = rect(p.$("#dock")), g = a.globe;
+  ok(a.mobile === true && a.size.W === 812, "turned on its side: still the phone layout", "mobile=" + a.mobile + " W=" + a.size.W);
+  ok(!overlap(zc, hd) && !overlap(zc, dk), "turned: zoom buttons clear the top bar and the dock", "zoom " + Math.round(zc.t) + "…" + Math.round(zc.b));
+  ok(g.cy - g.r >= hd.b - 2 && g.cy + g.r <= dk.t + 20, "turned: the globe re-fits", "disc " + Math.round(g.cy - g.r) + "…" + Math.round(g.cy + g.r));
+  await setSize(1280, 800);
+  ok(a.mobile === false && p.$("#layers").parentNode.id === "leftcol" && p.$("#timebar").parentNode === p.doc.body
+     && p.$("#globebtn").parentNode.id === "xp" && p.$("#units").parentNode.id === "topright", "widened: controls go back to their wide-screen places");
+  const order = [...p.$("#xp").children].map(e => e.id).join(",");
+  ok(order === "silkbtn,globebtn,cinebtn,capbtn,galbtn", "widened: mode buttons are in their original order", order);
+  const tr = [...p.$("#topright").children].map(e => e.id).join(",");
+  ok(tr === "searchwrap,locate,units,helpbtn", "widened: top-right buttons are in their original order", tr);
+  await setSize(375, 812);
+  ok(a.mobile === true && p.$("#timebar").parentNode.id === "dock" && p.$("#globebtn").parentNode.id === "chips", "narrowed again: controls return to the dock");
+
+  // request budget: on a zoomed-out flat map, moving about must not re-download the forecast each time
+  section("Request budget");
+  p.win.performance.setResourceTimingBufferSize(3000);
+  const grids = () => p.win.performance.getEntriesByType("resource").filter(e => e.name.includes("api.open-meteo.com/v1/forecast") && e.name.length > 1500).length;
+  key(p.win, "g");
+  for (let i = 0; i < 5; i++) key(p.win, "-");
+  const flatReady = await until(() => a.mode === "flat" && a.ready, 15000);
+  await sleep(2500);
+  if (!flatReady){ skip("flat map: small drags cost no forecast requests", "no flat forecast: " + (p.$("#toast").textContent || "no message")); return; }
+  const n0 = grids();
+  for (let i = 0; i < 6; i++){
+    const d = i % 2 ? -10 : 10;
+    touch(p, "pointerdown", 180, 320); touch(p, "pointermove", 180 + d, 326); touch(p, "pointerup", 180 + d, 326);
+    await sleep(120);
+  }
+  await sleep(1600);
+  ok(grids() === n0, "flat map, zoomed out: small drags cost no forecast requests", (grids() - n0) + " extra requests after 6 drags");
 }
 
 (async () => {
@@ -222,6 +287,7 @@ async function sizeTests(label, w, h, wantMobile){
     await sizeTests("Small phone", 320, 568, true);
     await sizeTests("Phone, on its side", 812, 375, true);
     await sizeTests("Tablet / laptop", 1280, 800, false);
+    await reflowTests();
   } catch (e) {
     section("Runner"); ok(false, "tests ran to the end", String(e && e.stack || e));
   }
