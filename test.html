@@ -49,10 +49,10 @@ const skip = (name, why) => record("skip", name, why);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function until(fn, ms){ const t0 = performance.now(); while (performance.now() - t0 < ms){ if (fn()) return true; await sleep(100); } return false; }
 
-async function open(w, h){
+async function open(w, h, hash){
   stage.textContent = "";
   const f = document.createElement("iframe");
-  f.width = w; f.height = h; f.src = "index.html?test=" + Date.now();
+  f.width = w; f.height = h; f.src = "index.html?test=" + Date.now() + (hash || "");
   stage.append(f);
   await new Promise(r => f.addEventListener("load", r, { once: true }));
   const win = f.contentWindow, doc = f.contentDocument;
@@ -240,6 +240,45 @@ async function sizeTests(label, w, h, wantMobile){
   return p;
 }
 
+/* ---------- shared links ---------- */
+async function linkTests(){
+  section("Shared links");
+  const tq = Math.round((Date.now() + 3*3600e3)/900000)*900000;
+  const iso = new Date(tq).toISOString().slice(0,16) + "Z";
+  const p = await open(375, 812, "#m=f&ll=35.68,139.69&z=5&l=wt&t=" + iso), a = p.win.aeolus;
+  ok(a.mode === "flat", "a link opens in the mode it names", "mode=" + a.mode);
+  ok(Math.abs(a.view.lat - 35.68) < 0.05 && Math.abs(a.view.lon - 139.69) < 0.05, "a link opens on the place it names",
+     a.view.lat.toFixed(2) + "," + a.view.lon.toFixed(2));
+  ok(Math.abs(a.view.zoom - 5) < 0.01, "a link opens at its zoom", "zoom " + a.view.zoom);
+  ok(a.show.wind && a.show.temp && !a.show.rain, "a link turns on the layers it names", JSON.stringify(a.show));
+  ok(Math.abs(a.time - tq) < 60000, "a link opens at its forecast time", new Date(a.time).toISOString());
+  const gotData = await until(() => a.ready, 20000);
+  if (!gotData){ skip("the address follows the view", "no forecast: " + (p.$("#toast").textContent || "no message")); }
+  else {
+    touch(p, "pointerdown", 180, 320); touch(p, "pointermove", 120, 300); touch(p, "pointermove", 90, 290); touch(p, "pointerup", 90, 290);
+    await sleep(2200);
+    const h = p.win.location.hash;
+    ok(/m=f/.test(h) && /t=/.test(h) && !/ll=35\.68,139\.69/.test(h), "the address follows the view and keeps the chosen time", h);
+  }
+  ok(a.formatLink(a.parseLink(a.link)) === a.link, "a link reads back to exactly itself", a.link);
+  const sb = p.$("#sharebtn");
+  ok(!!sb && shown(sb), "share button is there");
+  if (sb){
+    p.$("#toast").textContent = "";
+    sb.click();
+    await sleep(900);
+    ok(/Link copied|Copy this link/.test(p.$("#toast").textContent), "share gives you the link", p.$("#toast").textContent.slice(0, 80) || "no message");
+  }
+  const q = await open(375, 812, "#m=zz&ll=abc,999&z=nope&l=<b>&t=yesterday&p=1,2,3"), b = q.win.aeolus;
+  ok(!!b && b.mode === "globe" && !q.$("#panel").classList.contains("open"), "a broken link falls back to the normal start", b ? "mode=" + b.mode : "no app");
+  await sleep(1200);
+  ok(!/problem starting/.test(q.$("#toast").textContent), "a broken link raises no error", q.$("#toast").textContent.slice(0, 80));
+  const r = await open(375, 812, "#m=g&ll=48.85,2.35&z=1.2&l=w&p=48.857,2.352"), c = r.win.aeolus;
+  ok(Math.abs(c.normLon(c.globe.lon - 2.35)) < 4 && Math.abs(c.globe.lat - 48.85) < 0.5, "a globe link turns the globe to its place",
+     c.globe.lon.toFixed(1) + "," + c.globe.lat.toFixed(1));
+  ok(await until(() => r.$("#panel").classList.contains("open"), 3000), "a link with a point opens that point's weather");
+}
+
 /* ---------- one screen, turned and resized ---------- */
 async function reflowTests(){
   section("One screen, turned and resized");
@@ -255,7 +294,7 @@ async function reflowTests(){
   ok(a.mobile === false && p.$("#layers").parentNode.id === "leftcol" && p.$("#timebar").parentNode === p.doc.body
      && p.$("#globebtn").parentNode.id === "xp" && p.$("#units").parentNode.id === "topright", "widened: controls go back to their wide-screen places");
   const order = [...p.$("#xp").children].map(e => e.id).join(",");
-  ok(order === "silkbtn,globebtn,cinebtn,capbtn,galbtn", "widened: mode buttons are in their original order", order);
+  ok(order === "silkbtn,globebtn,cinebtn,capbtn,sharebtn,galbtn", "widened: mode buttons are in their original order", order);
   const tr = [...p.$("#topright").children].map(e => e.id).join(",");
   ok(tr === "searchwrap,locate,units,helpbtn", "widened: top-right buttons are in their original order", tr);
   await setSize(375, 812);
@@ -288,6 +327,7 @@ async function reflowTests(){
     await sizeTests("Phone, on its side", 812, 375, true);
     await sizeTests("Tablet / laptop", 1280, 800, false);
     await reflowTests();
+    await linkTests();
   } catch (e) {
     section("Runner"); ok(false, "tests ran to the end", String(e && e.stack || e));
   }

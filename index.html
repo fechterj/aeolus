@@ -321,6 +321,7 @@
   @media (orientation:landscape){
     body.mobile #zoomctl{bottom:calc(var(--dock-h,170px) + 6px)}   /* last, so it wins over the upright rule */
   }
+  #toast{overflow-wrap:anywhere}
 </style>
 </head>
 <body>
@@ -351,6 +352,7 @@
       <button id="globebtn" title="Night globe (G)" aria-label="Night globe" aria-pressed="false">🌍 globe</button>
       <button id="cinebtn" title="Cinema mode (C)" aria-label="Cinema mode" aria-pressed="false">⛶ cinema</button>
       <button id="capbtn" title="Save this sky as a poster" aria-label="Capture this sky">⤓ capture</button>
+      <button id="sharebtn" title="Share a link to this view" aria-label="Share a link that opens this view">↗ share</button>
       <button id="galbtn" title="Your collected skies" aria-label="Gallery of your captured skies">▦ gallery</button>    </div>
   </div>
   <div id="topright">
@@ -447,6 +449,7 @@
       <li><b>Cinema</b> — everything disappears and the atmosphere performs · <b>Capture</b> saves it as a poster</li>      <li><b>Globe</b> (G) — the same wind, temperature and rain wrapping a rotating night Earth, city lights and all</li>
       <li><b>Gallery</b> — every sky you capture is kept on this device; cinema collects them as it plays</li>
       <li><b>Search</b> flies to any place on Earth</li>
+      <li><b>Share</b> — a link that opens this exact view: place, zoom, layers, time and the point you opened. The address bar keeps up as you move</li>
       <li><b>Keyboard</b> — arrow keys move the view (Shift for bigger steps) · <b>Enter</b> shows the weather at the centre</li>
       <li>Every streamline is real air: thousands of particles riding the actual forecast wind field, colored by speed</li>
     </ul>
@@ -696,6 +699,7 @@ function fieldCoversView(){
 function applyField(f){
   field = f;
   displayTime = clamp(displayTime, f.t0*1000, f.t1*1000);
+  noteSharedTime();
   $("#slider").max = f.hours.length-1;
   syncTimeUI();
   layerDirty = true;
@@ -1375,18 +1379,20 @@ function buildLegend(){
   $("#legend").innerHTML = html || '<div class="title">no layers active</div>';
   measureChrome();                            // the legend strip changes height with the layers: re-fit the globe now
 }
+function setLayer(k, on){
+  if (show[k] === on) return;
+  const b = $(`#layers button[data-l="${k}"]`);
+  show[k] = on;
+  b.classList.toggle("on", on);
+  b.setAttribute("aria-pressed", on);
+  stillDirty = true;
+  if (k==="wind" && on) initParticles();
+  if (k==="rain" && on) initRain();
+  layerDirty = true;
+  buildLegend();
+}
 document.querySelectorAll("#layers button").forEach(b=>{
-  b.addEventListener("click", ()=>{
-    const k = b.dataset.l;
-    show[k] = !show[k];
-    b.classList.toggle("on", show[k]);
-    b.setAttribute("aria-pressed", show[k]);
-    stillDirty = true;
-    if (k==="wind" && show.wind) initParticles();
-    if (k==="rain" && show.rain) initRain();
-    layerDirty = true;
-    buildLegend();
-  });
+  b.addEventListener("click", ()=>setLayer(b.dataset.l, !show[b.dataset.l]));
 });
 
 /* ---------------- detail panel ---------------- */
@@ -1782,6 +1788,7 @@ function drawGlobe(){
 function applyGlobeField(f){
   gfield=f;
   displayTime=clamp(displayTime, f.t0*1000, f.t1*1000);
+  noteSharedTime();
   $("#slider").max=f.hours.length-1;
   syncTimeUI();
   $("#loader").classList.add("gone");
@@ -2316,17 +2323,136 @@ window.aeolus = {
   get reduced(){ return reduced; }, get ready(){ return !!activeField(); },
   get show(){ return {...show}; }, get globe(){ return { cx:GCX, cy:GCY, r:globeR(), lon:gview.lon0, lat:gview.lat0 }; },
   get view(){ return {...view}; }, get size(){ return { W, H }; },
+  parseLink, formatLink, get link(){ return formatLink(viewState()); },
   get pointers(){ return pointers.size; }, get cinema(){ return cinema; }, get time(){ return displayTime; },
   get range(){ const f = activeField(); return f ? { t0:f.t0*1000, t1:f.t1*1000 } : null; },
   get lats(){ const a = mode==="globe" ? gparts : parts; let lo = 90, hi = -90; for (const p of a){ if (p.lat<lo) lo=p.lat; if (p.lat>hi) hi=p.lat; } return { lo, hi }; },
 };
+
+/* ---------------- share this exact view ----------------
+   The view lives in the address after #: mode, centre, zoom, layers, silk, the forecast time when you
+   chose one, and the point whose weather is open. Opening that address opens the same view, and the
+   address keeps up as you move, so a reload keeps your place too. Example:
+   #m=g&ll=48.85,2.35&z=1.4&l=wt&t=2026-11-22T06:00Z&p=48.857,2.352 */
+var sharedT = null;                            // a time asked for by a link, checked once the forecast arrives
+function viewState(){
+  const ll = centerLL();
+  const st = { m: mode==="globe" ? "g" : "f", ll: [+clamp(ll.lat,-85,85).toFixed(2), +normLon(ll.lon).toFixed(2)],
+    z: +(mode==="globe" ? gview.zoom : view.zoom).toFixed(2),
+    l: (show.wind?"w":"")+(show.temp?"t":"")+(show.rain?"r":""), s: silk && !cinema };
+  if (!followNow) st.t = Math.round(displayTime/900000)*900000;      // to the quarter hour
+  if (marker) st.p = [+marker.lat.toFixed(3), +normLon(marker.lon).toFixed(3)];
+  return st;
+}
+function formatLink(st){
+  const r = (v, d) => +(+v).toFixed(d);           // round here too: wrapping a longitude leaves float dust (143.65000000000003)
+  const parts = ["m="+st.m, "ll="+st.ll.map(v=>r(v,2)).join(","), "z="+r(st.z,2), "l="+(st.l||"-")];
+  if (st.s) parts.push("s=1");
+  if (st.t != null) parts.push("t="+new Date(st.t).toISOString().slice(0,16)+"Z");
+  if (st.p) parts.push("p="+st.p.map(v=>r(v,3)).join(","));
+  return "#"+parts.join("&");
+}
+/* anything unreadable in a link is ignored, never trusted */
+function parseLink(hash){
+  const q = new URLSearchParams(String(hash||"").replace(/^#/,""));
+  const num = v => { if (v == null || v === "") return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const pair = v => {
+    if (!v) return null;
+    const a = v.split(",").map(num);
+    return a.length===2 && a[0]!==null && a[1]!==null && Math.abs(a[0])<=90 && Math.abs(a[1])<=540 ? a : null;
+  };
+  const st = {};
+  if (q.get("m")==="g" || q.get("m")==="f") st.m = q.get("m");
+  const ll = pair(q.get("ll")); if (ll) st.ll = [clamp(ll[0],-85,85), normLon(ll[1])];
+  const z = num(q.get("z")); if (z!==null) st.z = z;
+  const l = q.get("l"); if (l!==null && /^(-|[wtr]{1,3})$/.test(l)) st.l = l.replace("-","");
+  if (q.get("s")==="1") st.s = true;
+  const t = q.get("t"); if (t && /^\d{4}-\d\d-\d\dT\d\d:\d\dZ$/.test(t)){ const ms = Date.parse(t); if (Number.isFinite(ms)) st.t = ms; }
+  const p = pair(q.get("p")); if (p) st.p = [clamp(p[0],-85,85), normLon(p[1])];
+  return st;
+}
+function noteSharedTime(){
+  if (sharedT == null) return;
+  const t = sharedT; sharedT = null;
+  if (Math.abs(displayTime - t) > 90*60000)
+    showToast("The time in that link is outside the current forecast, so this shows the nearest hour there is.", null, 8000);
+}
+function applyLink(st, opts={}){
+  if (!st || !Object.keys(st).length) return false;
+  if (st.l !== undefined) for (const k of ["wind","temp","rain"]) setLayer(k, st.l.includes(k[0]));
+  if (!cinema && !!st.s !== silk) setSilk(!!st.s);
+  const target = st.m==="f" ? "flat" : st.m==="g" ? "globe" : mode;
+  if (st.ll){ view.lat = st.ll[0]; view.lon = st.ll[1]; gview.lat0 = st.ll[0]; gview.lon0 = st.ll[1]; }
+  if (st.z !== undefined){
+    if (target==="globe") gview.zoom = clamp(st.z, GZMIN, GZMAX); else view.zoom = clamp(st.z, ZMIN, ZMAX);
+  }
+  if (target !== mode) setMode(target);
+  else if (mode==="flat"){ onViewChanged(false); initParticles(); if (!opts.initial) scheduleField(50); }
+  else clearTrails();
+  if (mode==="globe" && st.ll){ gview.lat0 = st.ll[0]; gview.lon0 = st.ll[1]; }   // setMode narrows the latitude for its own start
+  if (st.t !== undefined){
+    displayTime = st.t; followNow = false; sharedT = st.t;
+    const f = activeField();
+    if (f){ displayTime = clamp(displayTime, f.t0*1000, f.t1*1000); noteSharedTime(); }
+  } else if (!opts.initial){
+    followNow = true;
+    const f = activeField();
+    displayTime = f ? clamp(Date.now(), f.t0*1000, f.t1*1000) : Date.now();
+  }
+  syncTimeUI();
+  if (st.p) openPanel(st.p[1], st.p[0]);
+  else if (!opts.initial && panel.classList.contains("open")) closePanel();
+  return true;
+}
+/* the address keeps up with the view: quietly, without adding history entries,
+   and not mid-gesture (Safari refuses more than 100 address changes in 30 s) */
+let linkShown = location.hash;
+function updateLink(){
+  if (pointers.size || document.hidden || !activeField()) return;
+  const h = formatLink(viewState());
+  if (h === linkShown) return;
+  linkShown = h;
+  try{ history.replaceState(history.state, "", h); }catch{}
+}
+addEventListener("hashchange", ()=>{                // someone pasted or edited a link into this tab
+  if (location.hash === linkShown) return;
+  linkShown = location.hash;
+  applyLink(parseLink(location.hash));
+});
+function shareLink(){
+  const url = location.href.split("#")[0] + formatLink(viewState());
+  linkShown = ""; updateLink();
+  const text = "Wind, temperature and rain · " + timelabel.textContent;
+  if (isMobile && navigator.share){
+    navigator.share({ title:"Aeolus", text, url }).catch(err=>{ if (!err || err.name !== "AbortError") copyLink(url); });
+    return;
+  }
+  copyLink(url);
+}
+function copyLink(url){
+  let settled = false;
+  const fallback = ()=>{ settled = true; showToast("Copy this link to share this view: " + url, null, 15000); };
+  try{
+    navigator.clipboard.writeText(url).then(()=>{ settled = true; showToast("Link copied. It opens this exact view."); }, fallback);
+    setTimeout(()=>{ if (!settled) fallback(); }, 1500);   // some browsers leave the clipboard request hanging: show the link anyway
+  }catch{ fallback(); }
+}
+$("#sharebtn").addEventListener("click", shareLink);
 
 /* ---------------- init ---------------- */
 sizeCanvases();
 initParticles();
 initRain();
 buildLegend();
-setMode("globe");              // open on the night globe; the flat map's wind loads when you switch to it
+const startLink = parseLink(location.hash);
+if (startLink.m === "f"){                      // a link to the flat map: start there
+  applyLink(startLink, { initial:true });
+  fetchField();
+} else {
+  setMode("globe");            // open on the night globe; the flat map's wind loads when you switch to it
+  applyLink(startLink, { initial:true });
+}
+setInterval(updateLink, 1500);
 requestAnimationFrame(frame);
 setInterval(()=>{                                                       // keep the atmosphere fresh
   if (document.hidden) return;
