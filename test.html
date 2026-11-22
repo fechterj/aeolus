@@ -424,6 +424,25 @@ async function stateTests(){
   p.$("#nowbtn").click(); key(p.win, "c"); await sleep(400); key(p.win, "x");
   ok(!a.cinema && !hasT(), "leaving cinema goes back to following the clock", a.link);
 
+  key(p.win, "c"); key(p.win, "c", { repeat: true }); key(p.win, "c", { repeat: true });
+  ok(a.cinema, "holding C enters cinema and stays there (key repeat does not flip it back)");
+  key(p.win, "x"); await sleep(200);
+
+  // a toast that has faded must leave the Tab order: its Retry button would otherwise be an invisible stop
+  p.win.showToast("test message", () => {}); p.win.hideToast(); await sleep(450);
+  ok(getComputedStyle(p.$("#toast")).visibility === "hidden", "a faded message is out of reach of the keyboard", getComputedStyle(p.$("#toast")).visibility);
+
+  // Enter in search only picks a result that is showing and answers what is typed now
+  let picked = false;
+  const se = p.$("#search"), res = p.$("#results"), fake = p.doc.createElement("button");
+  fake.addEventListener("click", () => { picked = true; });
+  res.replaceChildren(fake); res.dataset.q = "Lon"; res.classList.remove("open");
+  se.value = "Lon"; se.dispatchEvent(new p.win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  const hiddenPick = picked;
+  res.classList.add("open"); se.value = "Lond"; se.dispatchEvent(new p.win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  ok(!hiddenPick && !picked, "Enter in search never jumps to a hidden or older result", (hiddenPick ? "hidden list picked" : "") + (picked ? " older list picked" : ""));
+  res.replaceChildren(); res.classList.remove("open"); se.value = "";
+
   play.click(); await sleep(200);
   const tq = Math.floor((Date.now() + 5 * 3600e3) / 900000) * 900000;
   p.win.location.hash = "#m=g&ll=10,20&z=1&l=w&t=" + new Date(tq).toISOString().slice(0, 16) + "Z";
@@ -481,6 +500,19 @@ async function faultTests(){
   p = await open(375, 812, "", "daily");
   await until(() => /today/.test(toast(p)), 6000);
   ok(/today|midnight/.test(toast(p)), "daily limit: says it resets at midnight UTC", toast(p).slice(0, 90) || "no message");
+  await sleep(13000);                                // longer than an ordinary message stays
+  ok(p.$("#toast").classList.contains("show") && /today|midnight/.test(toast(p)), "daily limit, nothing saved: the reason stays on screen, not just for a moment");
+
+  // a limit hit on the globe while a flat-map forecast is saved: switching maps shows it, still sending nothing
+  await forgetForecasts();
+  await idbPut("aeolus-cache-test", "fields", { k: "flat", saved: Date.now() - 2 * 3600e3, field: seed });
+  p = await open(375, 812, "", "hourly"); a = p.win.aeolus;
+  await until(() => /hour/.test(toast(p)), 6000);
+  const n1 = grids(p);
+  key(p.win, "g");
+  await until(() => a.ready, 4000);
+  ok(a.mode === "flat" && a.ready && grids(p) === n1, "limit reached, then switching maps: shows that map's saved forecast without asking again",
+     a.mode + ", " + (a.ready ? "showing a forecast" : "nothing shown") + ", " + (grids(p) - n1) + " more requests");
 
   // an hourly limit with an older forecast saved: show that instead of nothing
   await forgetForecasts();
@@ -602,6 +634,16 @@ async function linkTests(){
   ok(Math.abs(c.normLon(c.globe.lon - 2.35)) < 4 && Math.abs(c.globe.lat - 48.85) < 0.5, "a globe link turns the globe to its place",
      c.globe.lon.toFixed(1) + "," + c.globe.lat.toFixed(1));
   ok(await until(() => r.$("#panel").classList.contains("open"), 3000), "a link with a point opens that point's weather");
+
+  // zoomed in past 84 degrees north the grid used to shrink to one row: every wind and temperature reading became NaN
+  const pn = netLog.length;
+  const po = await open(375, 812, "#m=f&ll=85,10&z=7&l=wt"), pa = po.win.aeolus;
+  await until(() => pa.ready, 8000); await sleep(1500);
+  const gridUrl = netLog.slice(pn).find(n => n.win === po.win && n.kind === "grid");
+  const rows = gridUrl ? new Set(new URL(gridUrl.url).searchParams.get("latitude").split(",")).size : 0;
+  const L = pa.lats;
+  ok(pa.ready && pa.frameErrs === 0 && L.hi >= L.lo && (!gridUrl || rows > 1), "zoomed in at the top of the map: wind and temperature still draw",
+     (gridUrl ? rows + " grid rows, " : "from the saved forecast, ") + pa.frameErrs + " frame errors, wind at " + L.lo.toFixed(1) + "…" + L.hi.toFixed(1) + "°");
 }
 
 /* ---------- one screen, turned and resized ---------- */

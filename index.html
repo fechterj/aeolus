@@ -154,8 +154,9 @@
     background:rgba(6,9,15,.5);padding:3px 8px;border-radius:6px}
   #attr a{color:inherit}
   #toast{position:fixed;top:80px;left:50%;transform:translateX(-50%) translateY(-8px);z-index:60;
-    padding:11px 18px;font-size:13px;opacity:0;pointer-events:none;transition:.3s;max-width:80vw}
-  #toast.show{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto}
+    padding:11px 18px;font-size:13px;opacity:0;pointer-events:none;max-width:80vw;
+    visibility:hidden;transition:.3s, visibility 0s .3s}   /* hidden once faded, so its Retry leaves the Tab order */
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto;visibility:visible;transition:.3s}
   #toast button{color:var(--accent);margin-left:10px;font-weight:600}
   #loader{position:fixed;inset:0;z-index:50;background:var(--bg);display:grid;place-items:center;
     transition:opacity .8s;text-align:center}
@@ -503,11 +504,17 @@ function fetchT(url, opts={}, ms=20000){
     if (opts.signal.aborted) ac.abort();
     else opts.signal.addEventListener("abort", ()=>ac.abort(), {once:true});
   }
-  return fetch(url, {...opts, signal:ac.signal}).then(
-    r=>{ clearTimeout(t); return r; },
-    e=>{ clearTimeout(t);                      // older Safari reports every abort as AbortError
-         if (timedOut){ const te = new Error("timed out"); te.name = "TimeoutError"; throw te; }
-         throw e; });
+  const fail = e=>{ clearTimeout(t);           // older Safari reports every abort as AbortError
+    if (timedOut){ const te = new Error("timed out"); te.name = "TimeoutError"; throw te; }
+    throw e; };
+  return fetch(url, {...opts, signal:ac.signal}).then(r=>{
+    // the clock keeps running until the body is read: a connection can stall after the headers
+    for (const m of ["json","blob","text"]){
+      const read = r[m].bind(r);
+      r[m] = ()=>read().then(v=>{ clearTimeout(t); return v; }, fail);
+    }
+    return r;
+  }, fail);
 }
 /* a step that may never answer (IndexedDB can hang on some phones) must not block the page */
 const within = (p, ms, fallback) => Promise.race([p, new Promise(r=>setTimeout(()=>r(fallback), ms))]);
@@ -520,7 +527,11 @@ function cacheOpen(){
   if (!cacheDBp) cacheDBp = new Promise((res,rej)=>{
     const rq = indexedDB.open("aeolus-cache"+TEST_DB,1);
     rq.onupgradeneeded = ()=>{ rq.result.createObjectStore("fields",{keyPath:"k"}); };
-    rq.onsuccess = ()=>res(rq.result);
+    rq.onsuccess = ()=>{
+      const db = rq.result;
+      db.onclose = ()=>{ cacheDBp = null; };      // a phone can close it in the background: open afresh next time
+      res(db);
+    };
     rq.onerror = ()=>rej(rq.error);
     rq.onblocked = ()=>rej(new Error("blocked"));
   });
@@ -534,7 +545,7 @@ async function cacheGetRaw(k){
       rq.onsuccess = ()=>res(rq.result||null);
       rq.onerror = ()=>res(null);
     });
-  }catch{ return null; }
+  }catch{ cacheDBp = null; return null; }
 }
 /* the cache is a convenience: if the browser's storage doesn't answer quickly, go to the network */
 function cacheGet(k){ return within(cacheGetRaw(k), 1500, null); }
@@ -546,7 +557,7 @@ async function cachePut(k, field){
       tx.objectStore("fields").put({k, saved:Date.now(), field});
       tx.oncomplete = tx.onerror = tx.onabort = ()=>res();
     });
-  }catch{}
+  }catch{ cacheDBp = null; }
 }
 function fieldUsable(c, maxAge){
   return !!(c && c.field && Array.isArray(c.field.hours) && c.field.hours.length > 1
@@ -680,7 +691,8 @@ function drawMap(){
     }
   }
   if (marker){
-    const p = toScreen(marker.lon, marker.lat);
+    // the copy of the marker nearest the view, so it stays put when the view's longitude is wrapped
+    const p = toScreen(marker.lon + Math.round((view.lon-marker.lon)/360)*360, marker.lat);
     mctx.save();
     mctx.strokeStyle = "rgba(110,231,255,.9)";
     mctx.lineWidth = 1.6;
@@ -697,6 +709,17 @@ const GRID_COLS = 18, GRID_ROWS = 12;
 let fieldAbort = null, fieldTimer = null, fieldSeq = 0;
 let dataBlockedUntil = 0;      // set by a rate-limit answer; no forecast requests of any kind before then (the limit is per connection)
 const isStale = f => !f || !f.at || Date.now()-f.at > FIELD_TTL;
+/* one retry when a rate-limit block ends, for whichever mode is showing then. It is not tied to a
+   request number, so switching modes while blocked cannot lose it */
+let blockRetry = null;
+function retryAfterBlock(){
+  clearTimeout(blockRetry);
+  blockRetry = setTimeout(()=>{
+    blockRetry = null;
+    if (Date.now() < dataBlockedUntil) return retryAfterBlock();
+    if (mode === "globe") fetchGlobeField(true); else fetchField(true);
+  }, Math.max(1000, dataBlockedUntil - Date.now() + 1000));
+}
 
 function scheduleField(delay=450){
   clearTimeout(fieldTimer);
@@ -709,7 +732,8 @@ function fieldCoversView(){
   const shift = Math.round((view.lon - (field.lon0+field.span/2))/360)*360;
   // the grid never reaches past 84 degrees or wider than 350: a view beyond that is as covered as it can get
   const north = Math.min(b.north, 84), south = Math.max(b.south, -84);
-  const lonOK = field.span >= 349 || (b.west+shift >= field.lon0 && b.east+shift <= field.lon0+field.span);
+  // shift is how far the view sits from the field in whole turns: take it off to compare in the field's frame
+  const lonOK = field.span >= 349 || (b.west-shift >= field.lon0 && b.east-shift <= field.lon0+field.span);
   return lonOK && north <= field.latN+1e-6 && south >= field.latS-1e-6;
 }
 function applyField(f){
@@ -732,7 +756,11 @@ async function flatFromCache(seq, maxAge){
   return true;
 }
 async function fetchField(force){
-  if (Date.now() < dataBlockedUntil) return;
+  if (Date.now() < dataBlockedUntil){
+    // no requests while blocked, but a saved forecast for this view can still be shown
+    if (!field && mode !== "globe" && await flatFromCache(++fieldSeq, FIELD_STALE)) hideToast();
+    return;
+  }
   const seq = ++fieldSeq;
   if (fieldAbort) fieldAbort.abort();
   fieldAbort = new AbortController();
@@ -746,7 +774,9 @@ async function fetchField(force){
   const latN0 = clamp(b.north,-84,84), latS0 = clamp(b.south,-84,84);
   const span = clamp(clamp(b.east-b.west,0.05,340)*1.4, 0.05, 350);
   const latPad = (latN0-latS0)*0.2;
-  const latN = clamp(latN0+latPad,-84,84), latS = clamp(latS0-latPad,-84,84);
+  let latN = clamp(latN0+latPad,-84,84), latS = clamp(latS0-latPad,-84,84);
+  // zoomed in past 84 degrees both edges clamp to the same latitude: keep a band at least 2 degrees tall
+  if (latN-latS < 2){ if (latN >= 83) latS = latN-2; else latN = latS+2; }
   const lon0 = view.lon - span/2;
   const lats = [], lons = [];
   for (let r=0;r<GRID_ROWS;r++){
@@ -771,8 +801,9 @@ async function fetchField(force){
       $("#loader").classList.add("gone");
       if (!field) await flatFromCache(seq, FIELD_STALE);
       if (seq !== fieldSeq) return;
-      showToast(plan.msg + (field ? " Showing the last forecast received." : ""), null, 12000);
-      if (plan.wait) setTimeout(()=>{ if (seq === fieldSeq) fetchField(true); }, plan.wait);
+      // with nothing to show, the reason stays up: an empty map that says nothing reads as broken
+      showToast(plan.msg + (field ? " Showing the last forecast received." : ""), null, field ? 12000 : Infinity);
+      retryAfterBlock();
       return;
     }
     if (!res.ok) throw new Error("HTTP "+res.status);
@@ -821,7 +852,7 @@ function sampleAt(lon,lat,tMs){
   while (lo < f.lon0) lo += 360;
   while (lo > f.lon0+f.span) lo -= 360;
   const fx = clamp((lo-f.lon0)/f.span*(f.cols-1), 0, f.cols-1);
-  const fy = clamp((f.latN-lat)/(f.latN-f.latS)*(f.rows-1), 0, f.rows-1);
+  const fy = clamp((f.latN-lat)/Math.max(1e-6, f.latN-f.latS)*(f.rows-1), 0, f.rows-1);
   const x0 = Math.floor(fx), y0 = Math.floor(fy);
   const x1 = Math.min(x0+1,f.cols-1), y1 = Math.min(y0+1,f.rows-1);
   const tx = fx-x0, ty = fy-y0;
@@ -1132,8 +1163,10 @@ addEventListener("keydown", e=>{
   if (["Shift","Meta","Control","Alt","CapsLock"].includes(e.key)) return;
   if (dlgStack.length && e.key !== "Escape") return;           // a dialog is open: its own keys only
   if (e.key === "Tab") return;
+  // holding a toggle key must not flip it back and forth (cinema included); held arrows and zoom keys may repeat
+  if (e.repeat && !e.key.startsWith("Arrow") && !"+=-_".includes(e.key)) return;
   if (cinema){ setCinema(false); return; }
-  if (e.target.tagName === "BUTTON" && (e.code === "Space" || e.key === "Enter")) return;   // that key presses the button
+  if (e.target.closest && e.target.closest("button,a[href]") && (e.code === "Space" || e.key === "Enter")) return;   // that key presses the button or follows the link
   if (e.key.startsWith("Arrow")){ e.preventDefault(); panBy(e.key, e.shiftKey ? 3 : 1); return; }
   if (e.key === "Enter"){ const ll = centerLL(); openPanel(ll.lon, ll.lat); return; }
   if (e.code === "Space"){ e.preventDefault(); setPlaying(!playing); }
@@ -1239,6 +1272,7 @@ mapC.style.touchAction = "none";
 mapC.addEventListener("pointerdown", e=>{
   if (e.pointerType === "mouse" && e.button !== 0) return;   // right and middle clicks are not drags
   if (cinema){ setCinema(false); cinemaExitClick = true; }
+  clearTimeout(clickTimer);       // a new touch cancels a pending click: a drag must not open the last tap's point
   try{ mapC.setPointerCapture(e.pointerId); }catch{}      // capture is a nicety; never let it break a touch
   pointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
   if (pointers.size === 1){
@@ -1297,6 +1331,10 @@ function endPointer(e){
     cinemaExitClick = false;
     dragInfo = null;
     scheduleField();
+  } else if (pointers.size === 1){
+    // one finger lifted from a pinch: the other carries on as a drag from where it is (never as a click)
+    const p = [...pointers.values()][0];
+    dragInfo = { x:p.x, y:p.y, lon:view.lon, lat:view.lat, glon:gview.lon0, glat:gview.lat0, moved:99, t:0 };
   }
   pinchDist = 0;
 }
@@ -1438,6 +1476,10 @@ async function openPanel(lon,lat){
   $("#pcoords").textContent = `${lat.toFixed(2)}°, ${qlon.toFixed(2)}°`;
   $("#pspeed").innerHTML = "—";
   $("#pgust").textContent = $("#ptemp").textContent = $("#pdir").textContent = $("#psky").textContent = $("#prain").textContent = "—";
+  // forget the previous point entirely: its sparkline, compass and data must not show under this one
+  panelData = null;
+  const sp = $("#spark"); sp.getContext("2d").clearRect(0,0,sp.width,sp.height);
+  $("#compass svg").style.transform = "";
   try{
     const url = "https://api.open-meteo.com/v1/forecast"
       + `?latitude=${lat.toFixed(3)}&longitude=${qlon.toFixed(3)}`
@@ -1448,7 +1490,7 @@ async function openPanel(lon,lat){
     if (res.status === 429){ $("#pname").textContent = "Point details are rate-limited right now"; return; }
     if (!res.ok) throw new Error("HTTP "+res.status);
     const d = await res.json();
-    if (!d || !d.current || !d.hourly) throw new Error("bad point");
+    if (!d || !d.current || !d.hourly || !Array.isArray(d.hourly.time) || !Array.isArray(d.hourly.wind_speed_10m)) throw new Error("bad point");
     if (!current()) return;                    // another point was opened, or the panel was closed
     panelData = d;
     renderPanel();
@@ -1528,7 +1570,7 @@ let searchTimer = null, searchSeq = 0;
 searchEl.addEventListener("input", ()=>{
   clearTimeout(searchTimer);
   const q = searchEl.value.trim();
-  if (q.length < 2){ searchSeq++; resultsEl.classList.remove("open"); return; }
+  if (q.length < 2){ searchSeq++; resultsEl.classList.remove("open"); resultsEl.innerHTML = ""; return; }
   searchTimer = setTimeout(async ()=>{
     const seq = ++searchSeq;
     try{
@@ -1537,6 +1579,7 @@ searchEl.addEventListener("input", ()=>{
       const j = await r.json();
       if (seq !== searchSeq || searchEl.value.trim() !== q) return;   // a newer search has taken over
       resultsEl.innerHTML = "";
+      resultsEl.dataset.q = q;                                       // which query these results answer
       if (!j.results || !j.results.length){ resultsEl.classList.remove("open"); return; }
       for (const place of j.results){
         const b = document.createElement("button");
@@ -1563,7 +1606,11 @@ searchEl.addEventListener("input", ()=>{
 });
 searchEl.addEventListener("keydown", e=>{
   if (e.key === "Escape"){ resultsEl.classList.remove("open"); searchEl.blur(); }
-  if (e.key === "Enter"){ const first = resultsEl.querySelector("button"); if (first) first.click(); }
+  if (e.key === "Enter"){
+    // only results that are showing and answer what is typed now: never a hidden or older list
+    if (!resultsEl.classList.contains("open") || resultsEl.dataset.q !== searchEl.value.trim()) return;
+    const first = resultsEl.querySelector("button"); if (first) first.click();
+  }
 });
 document.addEventListener("pointerdown", e=>{
   if (!e.target.closest("#searchwrap")) resultsEl.classList.remove("open");
@@ -1602,7 +1649,7 @@ function showToast(msg, retry, ms){
   }
   t.classList.add("show");
   clearTimeout(toastTimer);
-  if (!retry) toastTimer = setTimeout(hideToast, ms||4000);
+  if (!retry && ms !== Infinity) toastTimer = setTimeout(hideToast, ms||4000);   // Infinity: stays until replaced or hidden
 }
 function hideToast(){ $("#toast").classList.remove("show"); }
 
@@ -1615,7 +1662,8 @@ const GZMIN = 0.6, GZMAX = 3.2;
 let gfield = null, gAbort = null, gSeq = 0;
 let gparts = [], landFeats = null, starC = null;
 const globeR = () => GRB*gview.zoom;
-const centerLL = () => mode==="globe" ? {lon:gview.lon0, lat:gview.lat0} : {lon:view.lon, lat:view.lat};
+// always -180..180: the flat map's own longitude keeps counting past the date line while you drag
+const centerLL = () => mode==="globe" ? {lon:normLon(gview.lon0), lat:gview.lat0} : {lon:normLon(view.lon), lat:view.lat};
 
 /* major world cities: [lon, lat, brightness] */
 const CITIES = [
@@ -1956,7 +2004,10 @@ async function globeFromCache(seq, maxAge){
   return true;
 }
 async function fetchGlobeField(force){
-  if (Date.now() < dataBlockedUntil) return;
+  if (Date.now() < dataBlockedUntil){
+    if (!gfield && await globeFromCache(++gSeq, FIELD_STALE)) hideToast();
+    return;
+  }
   const seq=++gSeq;
   if (gAbort) gAbort.abort();
   gAbort = new AbortController();
@@ -1982,8 +2033,8 @@ async function fetchGlobeField(force){
       $("#loader").classList.add("gone");
       if (!gfield) await globeFromCache(seq, FIELD_STALE);
       if (seq!==gSeq) return;
-      showToast(plan.msg+(gfield?" Showing the last forecast received.":""), null, 12000);
-      if (plan.wait) setTimeout(()=>{ if(seq===gSeq) fetchGlobeField(true); }, plan.wait);
+      showToast(plan.msg+(gfield?" Showing the last forecast received.":""), null, gfield ? 12000 : Infinity);
+      retryAfterBlock();
       return;
     }
     if (!res.ok) throw new Error("HTTP "+res.status);
@@ -2224,12 +2275,16 @@ async function saveSky(c, auto){
 }
 const fmtPlace=r=>(r.mode==="globe"?"🌍 ":"")+Math.abs(r.lat).toFixed(1)+"°"+(r.lat>=0?"N":"S")+" "+Math.abs(r.lon).toFixed(1)+"°"+(r.lon>=0?"E":"W");
 let galURLs=[], lbRec=null, lbURL=null;
+let galSeq=0;
 async function openGallery(){
+  const seq=++galSeq;
   dlgOpen($("#gallery"), ".close");
   const grid=$("#galgrid");
   grid.innerHTML="";
   galURLs.forEach(URL.revokeObjectURL); galURLs=[];
   let recs=[]; try{ recs=await galAll(); }catch{}
+  // a newer open (or a close) took over while the gallery was read: building now would duplicate or leak
+  if (seq!==galSeq || !$("#gallery").classList.contains("open")) return;
   recs.sort((a,b)=>b.saved-a.saved);
   $("#galempty").style.display=recs.length?"none":"block";
   $("#galcount").textContent=recs.length?recs.length+" skies kept on this device":"";
@@ -2260,6 +2315,7 @@ function closeLightbox(){
   if (lbURL){ URL.revokeObjectURL(lbURL); lbURL=null; $("#lbimg").removeAttribute("src"); }
 }
 function closeGallery(){
+  galSeq++;
   dlgClose($("#gallery"));
   galURLs.forEach(URL.revokeObjectURL); galURLs=[];
   $("#galgrid").innerHTML="";
@@ -2282,15 +2338,18 @@ $("#lbdown").addEventListener("click", ()=>{
 });
 $("#lbdel").addEventListener("click", async ()=>{
   if (!lbRec) return;
-  try{ await galDel(lbRec.id); }catch{ showToast("Couldn't delete that sky."); return; }
+  const rec = lbRec; lbRec = null;              // a second click while this one deletes does nothing
+  try{ await galDel(rec.id); }catch{ lbRec = rec; showToast("Couldn't delete that sky."); return; }
   closeLightbox();
   openGallery();
 });
+let galArmTimer=null;
 $("#galclear").addEventListener("click", async e=>{
   const b=e.currentTarget;
+  clearTimeout(galArmTimer);                    // an older arming must not disarm this one early
   if (!b.dataset.arm){
     b.dataset.arm="1"; b.textContent="really clear?";
-    setTimeout(()=>{ delete b.dataset.arm; b.textContent="clear all"; },3000);
+    galArmTimer=setTimeout(()=>{ delete b.dataset.arm; b.textContent="clear all"; },3000);
     return;
   }
   delete b.dataset.arm; b.textContent="clear all";
@@ -2309,6 +2368,8 @@ function setSilk(on){
 }
 function setCinema(on){
   if (on === cinema) return;
+  // the controls go inert in cinema, which drops keyboard focus: remember it to hand back afterwards
+  const focusBefore = on ? document.activeElement : null;
   cinema = on;
   document.body.classList.toggle("cinema", on);
   for (const el of [$("header"), dock, $("#timebar"), $("#zoomctl"), $("#legend"), $("#attr")]) el.inert = on;   // out of reach while hidden
@@ -2316,7 +2377,7 @@ function setCinema(on){
   $("#cinebtn").classList.toggle("on", on);
   $("#cinebtn").setAttribute("aria-pressed", on);
   if (on){
-    preCinema = { silk, playing, follow: followNow };
+    preCinema = { silk, playing, follow: followNow, focus: focusBefore };
     autoBucket = null; autoCount = 0;           // each cinema run may keep up to 24 frames
     closePanel();
     resultsEl.classList.remove("open");
@@ -2331,6 +2392,8 @@ function setCinema(on){
       displayTime = f ? clamp(Date.now(), f.t0*1000, f.t1*1000) : Date.now();
       syncTimeUI();
     }
+    const fb = preCinema.focus;
+    if (fb && fb !== document.body && fb.isConnected && !fb.closest("[inert]")) fb.focus({preventScroll:true});
     preCinema = null;
   }
 }
@@ -2395,6 +2458,7 @@ function capture(){
     // on a phone the share sheet (save to photos, send to someone) beats a download nobody can find
     if (isMobile && navigator.canShare && navigator.share){
       cv.toBlob(async blob=>{
+        if (!blob){ showToast("Couldn't export the canvas."); return; }   // never share a file holding "null"
         try{
           const f = new File([blob], name, {type:"image/png"});
           if (navigator.canShare({files:[f]})) await navigator.share({files:[f], title:"Aeolus"});
@@ -2635,7 +2699,7 @@ window.aeolus = {
   parseLink, formatLink, get link(){ return formatLink(viewState()); },
   get cities(){ return cityXYZB.length / 4; }, get citySource(){ return citySource; }, get nightSource(){ return nightReady ? "Black Marble" : "dots"; },
   pulseAt, PULSE_DEPTH,
-  get pointers(){ return pointers.size; }, get cinema(){ return cinema; }, get time(){ return displayTime; },
+  get pointers(){ return pointers.size; }, get frameErrs(){ return frameErrs; }, get cinema(){ return cinema; }, get time(){ return displayTime; },
   get range(){ const f = activeField(); return f ? { t0:f.t0*1000, t1:f.t1*1000 } : null; },
   get lats(){ const a = mode==="globe" ? gparts : parts; let lo = 90, hi = -90; for (const p of a){ if (p.lat<lo) lo=p.lat; if (p.lat>hi) hi=p.lat; } return { lo, hi }; },
 };
