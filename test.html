@@ -255,6 +255,30 @@ async function unitTests(p){
   ok(exact && kink < 0.5, "temperature colours pass through each forecast point and bend smoothly across grid lines",
      (exact ? "exact at the points" : "misses a point") + ", slope change at a grid line " + kink.toFixed(3));
   ok((a.tempGradient().match(/rgb\(/g) || []).length === a.TEMP_STOPS.length, "the temperature legend is drawn from the same colours as the map");
+
+  // rain: one wet grid point becomes a soft round shower; never negative, no straight creased edges
+  const rp = new Float32Array(64); rp[3 * 8 + 3] = 4;
+  const rf = { cols: 8, rows: 8, t0: 0, hours: [{ pr: rp }, { pr: rp }] };
+  let neg = false, far = 0;
+  for (let y = 0; y <= 7; y += 0.25) for (let x = 0; x <= 7; x += 0.25){
+    const v = a.rainSmooth(rf, x, y, 0, false); if (v < 0) neg = true;
+    if (Math.max(Math.abs(x - 3), Math.abs(y - 3)) >= 2) far = Math.max(far, v);
+  }
+  const rs = x => (a.rainSmooth(rf, x + 1e-4, 3.3, 0, false) - a.rainSmooth(rf, x - 1e-4, 3.3, 0, false)) / 2e-4;
+  const rkink = Math.abs(rs(4 - 0.001) - rs(4 + 0.001));
+  ok(!neg && far < 1e-9 && rkink < 0.05, "rain from one grid point is a soft round shower: never negative, no creased edge, gone two points away",
+     (neg ? "negative somewhere, " : "") + "slope change at a grid line " + rkink.toFixed(4) + ", " + far.toExponential(1) + " left far away");
+  let drizzle = [0, 0], heavyLow = 9;
+  for (let k = 0; k < 300; k++){
+    const lon = -180 + k * 1.37, lat = -60 + (k * 0.71) % 120;
+    if (a.rainShown(0.15, lon, lat, 0) > 0) drizzle[0]++; else drizzle[1]++;
+    heavyLow = Math.min(heavyLow, a.rainShown(5, lon, lat, 0) / 5);
+  }
+  ok(drizzle[0] > 20 && drizzle[1] > 20 && heavyLow > 0.3, "light rain breaks into patches, heavy rain stays solid",
+     drizzle[0] + " wet / " + drizzle[1] + " dry spots at 0.15 mm/h; heavy rain keeps at least " + (heavyLow * 100).toFixed(0) + "%");
+  const shades = new Set(); for (let p = 0.01; p <= 0.2; p += 0.005) shades.add(a.rainColor(p));
+  ok(shades.size >= 12, "drizzle fades in through many shades, not a few hard rings", shades.size + " shades from 0 to 0.2 mm/h");
+  ok((a.rainGradient().match(/rgba\(/g) || []).length === a.RAIN_STOPS.length, "the rain legend is drawn from the same colours as the map");
   ok(/^rgba\(\d+,\d+,\d+,0\.6\)$/.test(a.speedColor(12)) && a.speedColor(-5) === a.speedColor(0) && a.speedColor(999) === a.speedColor(40),
      "wind colour scale clamps at both ends");
 }

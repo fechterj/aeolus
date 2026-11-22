@@ -927,11 +927,16 @@ const tempGradient = () => "linear-gradient(90deg,"+TEMP_STOPS.map(([c,r,g,b])=>
    through each grid point instead of creasing into diamonds along the grid lines the way straight-line
    blending does. fx, fy are grid coordinates; wrap joins the last column to the first (the globe's grid). */
 const crw = t => [((-t+2)*t-1)*t/2, ((3*t-5)*t*t+2)/2, ((-3*t+4)*t+1)*t/2, (t-1)*t*t/2];
-function tempCubic(f, fx, fy, tMs, wrap){
+/* cubic B-spline weights: never negative and smooth everywhere, so a lone wet grid point becomes a soft
+   round shower instead of a square with creased edges, and the result can never dip below zero */
+const bsw = t => { const s = 1-t; return [s*s*s/6, (3*t*t*t-6*t*t+4)/6, (-3*t*t*t+3*t*t+3*t+1)/6, t*t*t/6]; };
+function tempCubic(f, fx, fy, tMs, wrap){ return gridCubic(f, "tp", crw, fx, fy, tMs, wrap); }
+function rainSmooth(f, fx, fy, tMs, wrap){ return Math.max(0, gridCubic(f, "pr", bsw, fx, fy, tMs, wrap)); }
+function gridCubic(f, key, wf, fx, fy, tMs, wrap){
   const th = clamp((tMs/1000-f.t0)/3600, 0, f.hours.length-1.001);
   const h0 = Math.floor(th), h1 = Math.min(h0+1, f.hours.length-1), tt = th-h0;
-  const A = f.hours[h0].tp, B = f.hours[h1].tp, C = f.cols, R = f.rows;
-  const xi = Math.floor(fx), yi = Math.floor(fy), wx = crw(fx-xi), wy = crw(fy-yi);
+  const A = f.hours[h0][key], B = f.hours[h1][key], C = f.cols, R = f.rows;
+  const xi = Math.floor(fx), yi = Math.floor(fy), wx = wf(fx-xi), wy = wf(fy-yi);
   let va = 0, vb = 0;
   for (let m=0;m<4;m++){
     const y = clamp(yi-1+m, 0, R-1)*C;
@@ -948,20 +953,51 @@ function tempCubic(f, fx, fy, tMs, wrap){
 /* precipitation palette: 0 .. 10+ mm/h, alpha ramps with intensity */
 const RAIN_STOPS = [
   [0,   70,110,200, 0],
-  [0.1, 70,120,210, 0.10],
-  [0.5, 60,150,235, 0.28],
+  [0.1, 70,120,210, 0.07],
+  [0.5, 60,150,235, 0.26],
   [2,   95,195,255, 0.45],
   [5,  175,230,255, 0.60],
   [10, 240,250,255, 0.75],
 ];
+/* the table is spaced on a square-root scale: most rain is light, and an even 0..10 spacing left the
+   whole drizzle range (0..0.1 mm/h) to two or three steps, which showed as hard rings */
 const RAIN_LUT = [];
 for (let i=0;i<256;i++){
-  const s = i/255*10;
+  const s = (i/255)*(i/255)*10;
   let k=0; while (k<RAIN_STOPS.length-2 && s>RAIN_STOPS[k+1][0]) k++;
   const a=RAIN_STOPS[k], b=RAIN_STOPS[k+1], t=clamp((s-a[0])/(b[0]-a[0]),0,1);
   RAIN_LUT.push([Math.round(lerp(a[1],b[1],t)),Math.round(lerp(a[2],b[2],t)),Math.round(lerp(a[3],b[3],t)),lerp(a[4],b[4],t)]);
 }
-const rainColor = p => RAIN_LUT[clamp(Math.round(p/10*255),0,255)];
+const rainColor = p => RAIN_LUT[clamp(Math.round(Math.sqrt(Math.max(0,p)/10)*255),0,255)];
+// on the same square-root scale, so 0.5, 2 and 5 mm/h sit close under evenly spaced labels
+const rainGradient = () => "linear-gradient(90deg,"+RAIN_STOPS.map(([p,r,g,b,a])=>
+  `rgba(${r},${g},${b},${Math.max(0.15,a).toFixed(2)}) ${(Math.sqrt(p/10)*100).toFixed(1)}%`).join(",")+")";
+
+/* showers, not blobs: a 15-degree forecast grid cannot place rain finely, so its soft shapes are broken
+   up by a value noise fixed to the map (about 4 degrees across, two octaves). It drifts slowly east
+   with forecast time, so playing time moves the texture with the weather instead of under it. */
+const NCELL = 4, NCOLS = 360/NCELL;
+function nHash(x, y){ let h = (x*374761393 + y*668265263) | 0; h = Math.imul(h ^ (h>>>13), 1274126177); return ((h ^ (h>>>16)) >>> 0)/4294967296; }
+function vnoise(gx, gy, period){
+  const x0 = Math.floor(gx), y0 = Math.floor(gy), tx = gx-x0, ty = gy-y0;
+  const sx = tx*tx*(3-2*tx), sy = ty*ty*(3-2*ty);
+  const xa = ((x0%period)+period)%period, xb = (xa+1)%period;   // wraps round the world with no seam
+  return lerp(lerp(nHash(xa,y0), nHash(xb,y0), sx), lerp(nHash(xa,y0+1), nHash(xb,y0+1), sx), sy);
+}
+function rainTexture(lon, lat, tMs){
+  const gx = (lon + 180 + tMs/3600e3*1.2)/NCELL, gy = (lat + 90)/NCELL;
+  return 0.65*vnoise(gx, gy, NCOLS) + 0.35*vnoise(gx*2.3+17, gy*2.3+5, Math.round(NCOLS*2.3));
+}
+/* rain as drawn: the smooth field, thinned by the texture. Heavy rain keeps most of its strength;
+   light rain at the edges of a shower breaks into patches */
+function rainShown(pr, lon, lat, tMs){
+  if (pr <= 0.005) return 0;
+  const n = rainTexture(lon, lat, tMs);                  // 0..1
+  const keep = smooth(0.3, 0.8, n + Math.min(pr, 3)*0.12);
+  // the smoothing spreads a wet grid point's trace of rain wide: take a little off the bottom so a
+  // 0.1 mm/h reading stays a few patches instead of a haze over a whole ocean
+  return Math.max(0, pr*(0.15 + 1.1*keep) - 0.06);
+}
 
 /* ---------------- scalar layer renderer ----------------
    Low-res offscreen field, bilinear-sampled, upscaled smooth.
@@ -985,19 +1021,19 @@ function renderLayer(){
   for (let j=0;j<LH;j++){
     const lat = layerLats[j];
     for (let i=0;i<LW;i++){
-      const s = sampleAt(layerLons[i], lat, displayTime);
       let r=0,g=0,b=0,a=0;
+      let lo = layerLons[i];
+      while (lo < field.lon0) lo += 360;
+      while (lo > field.lon0+field.span) lo -= 360;
+      const fx = clamp((lo-field.lon0)/field.span*(field.cols-1), 0, field.cols-1);
+      const fy = clamp((field.latN-lat)/Math.max(1e-6, field.latN-field.latS)*(field.rows-1), 0, field.rows-1);
       if (show.temp){
-        let lo = layerLons[i];
-        while (lo < field.lon0) lo += 360;
-        while (lo > field.lon0+field.span) lo -= 360;
-        const fx = clamp((lo-field.lon0)/field.span*(field.cols-1), 0, field.cols-1);
-        const fy = clamp((field.latN-lat)/Math.max(1e-6, field.latN-field.latS)*(field.rows-1), 0, field.rows-1);
         const c = tempColor(tempCubic(field, fx, fy, displayTime, false));
         r=c[0]; g=c[1]; b=c[2]; a=TEMP_ALPHA;
       }
-      if (show.rain && s.pr > 0.02){
-        const c = rainColor(s.pr);
+      const pr = show.rain ? rainShown(rainSmooth(field, fx, fy, displayTime, false), layerLons[i], lat, displayTime) : 0;
+      if (pr > 0.01){
+        const c = rainColor(pr);
         const ap = c[3], inv = 1-ap;
         const oa = ap + a*inv;
         if (oa > 0){
@@ -1030,13 +1066,21 @@ function stepRain(){
   for (const d of rain){
     const w = toWorld(d.x, d.y);
     const s = sampleAt(w.lon, w.lat, displayTime);
-    if (s.pr < 0.08){ d.x = Math.random()*W; d.y = Math.random()*H; continue; }
+    // the same rain the layer draws (smooth, textured), so streaks fall inside its showers, not in grid squares
+    let lo = w.lon;
+    while (lo < field.lon0) lo += 360;
+    while (lo > field.lon0+field.span) lo -= 360;
+    const fx = clamp((lo-field.lon0)/field.span*(field.cols-1), 0, field.cols-1);
+    const fy = clamp((field.latN-w.lat)/Math.max(1e-6, field.latN-field.latS)*(field.rows-1), 0, field.rows-1);
+    const pr = rainShown(rainSmooth(field, fx, fy, displayTime, false), w.lon, w.lat, displayTime);
+    // light rain gets few drops: a drop in drizzle usually moves on, so density follows intensity
+    if (pr < 0.05 || Math.random() > clamp(pr*1.5, 0.15, 1)){ d.x = Math.random()*W; d.y = Math.random()*H; continue; }
     const drift = clamp(s.u*0.35, -3, 3);
-    d.y += 4.5 + Math.min(s.pr,4)*1.2;
+    d.y += 4.5 + Math.min(pr,4)*1.2;
     d.x += drift;
     if (d.y > H+10){ d.y = -10; d.x = Math.random()*W; }
     if (d.x < -10) d.x = W+10; if (d.x > W+10) d.x = -10;
-    fctx.strokeStyle = `rgba(160,205,255,${clamp(0.12+s.pr*0.12,0.12,0.5)})`;
+    fctx.strokeStyle = `rgba(160,205,255,${clamp(0.08+pr*0.12,0.08,0.5)})`;
     fctx.beginPath();
     fctx.moveTo(d.x-drift*0.7, d.y-7);
     fctx.lineTo(d.x, d.y);
@@ -1471,7 +1515,7 @@ function buildLegend(){
     tempGradient(),
     [-30,-5,20,45].map(c=>Math.round(tu.f(c))+"°"));   // evenly spaced values, so each label sits on its colour (four fit a phone)
   if (sh.rain) html += sec("precipitation · mm/h",
-    "linear-gradient(90deg,rgba(70,120,210,.15),#3c96eb,#5fc3ff,#afe6ff,#f0faff)",
+    rainGradient(),
     ["0","0.5","2","5","10+"]);
   $("#legend").innerHTML = html || '<div class="title">no layers active</div>';
   measureChrome();                            // the legend strip changes height with the layers: re-fit the globe now
@@ -2159,18 +2203,18 @@ function drawGlobeLayer(){
       const Z=Math.sqrt(1-dd);
       const lat=Math.asin(clamp(Z*sl0+Y2*cl0,-1,1))/D2R;
       const lon=gview.lon0+Math.atan2(X, Z*cl0-Y2*sl0)/D2R;
-      const s=sampleG(lon,lat,displayTime);
       let r=0,g=0,b=0,a=0;
+      const fx=(((lon+180)%360+360)%360)/360*gfield.cols;
+      const fy=clamp((gfield.latN-lat)/(gfield.latN-gfield.latS)*(gfield.rows-1),0,gfield.rows-1);
       if (show.temp){
-        const fx=(((lon+180)%360+360)%360)/360*gfield.cols;
-        const fy=clamp((gfield.latN-lat)/(gfield.latN-gfield.latS)*(gfield.rows-1),0,gfield.rows-1);
         const c=tempColor(tempCubic(gfield, fx, fy, displayTime, true));
         // a little lighter towards the limb, like the atmosphere thinning the view there
         r=c[0]; g=c[1]; b=c[2]; a=(TEMP_ALPHA+0.06)*(1-0.35*smooth(0.75,1,rr));
       }
-      if (show.rain && s.pr>0.02){
-        const c=rainColor(s.pr);
-        const ap=c[3], inv=1-ap, oa=ap+a*inv;
+      const pr=show.rain ? rainShown(rainSmooth(gfield, fx, fy, displayTime, true), lon, lat, displayTime) : 0;
+      if (pr>0.01){
+        const c=rainColor(pr);
+        const ap=c[3]*(1-0.35*smooth(0.75,1,rr)), inv=1-ap, oa=ap+a*inv;   // thins towards the limb like the temperature
         if (oa>0){
           r=(c[0]*ap+r*a*inv)/oa; g=(c[1]*ap+g*a*inv)/oa; b=(c[2]*ap+b*a*inv)/oa; a=oa;
         }
@@ -2741,7 +2785,7 @@ window.aeolus = {
   get show(){ return {...show}; }, get globe(){ return { cx:GCX, cy:GCY, r:globeR(), lon:gview.lon0, lat:gview.lat0 }; },
   get view(){ return {...view}; }, get size(){ return { W, H }; },
   parseLink, formatLink, get link(){ return formatLink(viewState()); },
-  tempCubic, tempGradient, TEMP_STOPS, globeLayerImage: goff,
+  tempCubic, tempGradient, TEMP_STOPS, globeLayerImage: goff, rainSmooth, rainShown, rainColor, rainGradient, RAIN_STOPS,
   get cities(){ return cityXYZB.length / 4; }, get citySource(){ return citySource; }, get nightSource(){ return nightReady ? "Black Marble" : "dots"; },
   pulseAt, PULSE_DEPTH,
   get pointers(){ return pointers.size; }, get frameErrs(){ return frameErrs; }, get cinema(){ return cinema; }, get time(){ return displayTime; },
