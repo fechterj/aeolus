@@ -639,6 +639,34 @@ async function faultTests(){
     const back = await until(() => nba.nightSource === "Black Marble", 8000);
     ok(gone && back, "NASA lights come back after the graphics context is lost", (gone ? "lost, " : "never lost, ") + nba.nightSource);
   }
+
+  // the lights button turns the city lights off and on, and a link carries the choice
+  const lo = await open(375, 812, "#m=g&ll=40,10&z=1.2&l=-&s=1"), loa = lo.win.aeolus;
+  await until(() => loa.cities > 1000, 8000); await sleep(800);
+  const lbtn = lo.$('#layers button[data-l="lights"]');
+  const warm = () => {                         // bright warm pixels on the globe's own canvas: the city dots
+    lo.win.drawGlobe();
+    const cv = lo.$("#globe"), d = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height).data;
+    let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] > 150 && d[i+1] > 120 && d[i] > d[i+2] + 30) n++;
+    return n;
+  };
+  const before = warm(), nightShown = () => getComputedStyle(lo.$("#nightgl")).display !== "none";
+  const nightWas = nightShown();
+  lbtn.click(); await sleep(400);
+  const after = warm();
+  await until(() => /[#&]n=0\b/.test(lo.win.location.hash), 4000);   // the address catches up every 1.5 s
+  ok(lbtn.getAttribute("aria-pressed") === "false" && !loa.show.lights && before > 200 && after < before * 0.05
+     && !nightShown() && /[#&]n=0\b/.test(lo.win.location.hash),
+     "the lights button turns the city lights off", "dots " + before + " → " + after + ", NASA layer shown " + nightWas + " → " + nightShown() + ", " + lo.win.location.hash);
+  lo.doc.body.dispatchEvent(new lo.win.KeyboardEvent("keydown", { key: "l", bubbles: true })); await sleep(400);
+  await until(() => !/n=0/.test(lo.win.location.hash), 4000);
+  ok(loa.show.lights && warm() > before * 0.5 && !/n=0/.test(lo.win.location.hash), "L turns them back on", loa.show.lights + ", " + lo.win.location.hash);
+  lo.win.location.hash = "#m=f&ll=40,10&z=4&l=w"; await sleep(500);
+  ok(getComputedStyle(lbtn).display === "none", "the lights button shows only on the globe", getComputedStyle(lbtn).display);
+  const lo2 = await open(375, 812, "#m=g&ll=40,10&z=1.2&l=w&n=0"), lo2a = lo2.win.aeolus;
+  await sleep(800);
+  ok(!lo2a.show.lights && lo2.doc.body.classList.contains("nolights") && lo2.$('#layers button[data-l="lights"]').getAttribute("aria-pressed") === "false",
+     "a link with n=0 opens with the lights off", JSON.stringify(lo2a.show));
   await forgetForecasts();
 }
 

@@ -11,12 +11,13 @@ A live picture of the wind, temperature and rain across the world, drawn on a ni
 - **Night globe.** Wind streamlines wrap a slowly turning Earth with coastlines and city lights. Drag to turn it, scroll or pinch to zoom, click any point for its weather.
 - **Flat map.** The same wind over a dark basemap, for zooming in on a region.
 - **Three layers.** Wind, temperature and rain, on their own or together.
+- **City lights.** On the globe, the lights button (or `L`) hides the city lights for a clean view of the weather.
 - **Time.** Play up to three days of forecast forward, scrub with the slider, or jump back to now.
 - **Silk.** A long-exposure mode where the wind paints itself into ribbons.
 - **Cinema.** The interface disappears and the forecast plays. It keeps a frame every two forecast hours.
 - **Capture and gallery.** Save the current sky as an image. Captures are kept in a gallery in your browser, on your device only.
 - **Search.** Type a place to fly there.
-- **Share.** The share button copies a link, or opens the share sheet on a phone, that opens this exact view: mode, place, zoom, layers, the forecast time if you chose one, and the point whose weather is open. The address bar keeps up as you move, so a reload keeps your place too.
+- **Share.** The share button copies a link, or opens the share sheet on a phone, that opens this exact view: mode, place, zoom, layers, city lights, the forecast time if you chose one, and the point whose weather is open. The address bar keeps up as you move, so a reload keeps your place too.
 
 ## Controls
 
@@ -30,6 +31,7 @@ A live picture of the wind, temperature and rain across the world, drawn on a ni
 | `Enter` | Weather at the centre of the view |
 | `Space` | Play or pause time |
 | `G` | Globe or flat map |
+| `L` | City lights on or off (globe) |
 | `S` | Silk |
 | `C` | Cinema (any key or click returns) |
 | `Esc` | Close the open panel or dialog |

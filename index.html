@@ -35,6 +35,8 @@
   /* NASA's night lights sit over the globe and add their light to it (black adds nothing) */
   #nightgl{pointer-events:none;mix-blend-mode:screen}
   body.globe #nightgl.ready{display:block}
+  body.nolights #nightgl.ready{display:none}
+  body:not(.globe) #layers button[data-l="lights"]{display:none}   /* only the globe has lights */
   body.globe #layer,body.globe #fx{display:none}
   body.globe #map{opacity:0}   /* stays in the tree: it is the input surface for both modes */
   body.globe #globe,body.globe #gfx{display:block}
@@ -351,6 +353,7 @@
       <button data-l="wind" class="on" aria-pressed="true"><i style="background:#6ee7ff;color:#6ee7ff"></i>wind</button>
       <button data-l="temp" aria-pressed="false"><i style="background:#e8b83a;color:#e8b83a"></i>temp</button>
       <button data-l="rain" aria-pressed="false"><i style="background:#5f9dff;color:#5f9dff"></i>rain</button>
+      <button data-l="lights" class="on" aria-pressed="true" title="City lights on the globe (L)" aria-label="City lights"><i style="background:#ffe2b4;color:#ffe2b4"></i>lights</button>
     </div>
     <div id="xp" class="glass">
       <button id="silkbtn" title="Long-exposure paint mode (S)" aria-label="Silk, long-exposure mode" aria-pressed="false"><i style="background:#f0faff;color:#f0faff"></i>silk</button>
@@ -451,7 +454,7 @@
       <li><b>Slider</b> scrubs up to 3 days of forecast · <b>NOW</b> returns to the present</li>
       <li><b>Layers</b> — toggle wind streamlines, the temperature field and live rain</li>
       <li><b>Silk</b> — long-exposure mode: the wind paints itself into ribbons of light</li>
-      <li><b>Cinema</b> — everything disappears and the atmosphere performs · <b>Capture</b> saves it as a poster</li>      <li><b>Globe</b> (G) — the same wind, temperature and rain wrapping a turning night Earth, with the lights of more than 7,000 cities and towns</li>
+      <li><b>Cinema</b> — everything disappears and the atmosphere performs · <b>Capture</b> saves it as a poster</li>      <li><b>Globe</b> (G) — the same wind, temperature and rain wrapping a turning night Earth, with the lights of more than 7,000 cities and towns (<b>lights</b> or L hides them)</li>
       <li><b>Gallery</b> — every sky you capture is kept on this device; cinema collects them as it plays</li>
       <li><b>Search</b> flies to any place on Earth</li>
       <li><b>Share</b> — a link that opens this exact view: place, zoom, layers, time and the point you opened. The address bar keeps up as you move</li>
@@ -592,7 +595,7 @@ let displayTime = Date.now();  // ms, the moment being shown
 let playing = false;
 let mapDirty = true;
 let layerDirty = true;
-const show = { wind:true, temp:false, rain:false };
+const show = { wind:true, temp:false, rain:false, lights:true };
 let silk = false, cinema = false, preCinema = null;
 let autoBucket = null, autoCount = 0;
 let marker = null;             // {lon,lat} of clicked point
@@ -1256,6 +1259,7 @@ addEventListener("keydown", e=>{
   if (e.key === "s" || e.key === "S") setSilk(!silk);
   if (e.key === "c" || e.key === "C") setCinema(!cinema);
   if (e.key === "g" || e.key === "G") setMode(mode==="globe"?"flat":"globe");
+  if ((e.key === "l" || e.key === "L") && mode === "globe") setLayer("lights", !show.lights);
   if (e.key === "Escape"){
     if ($("#lightbox").classList.contains("open")) closeLightbox();
     else if ($("#gallery").classList.contains("open")) closeGallery();
@@ -1529,6 +1533,7 @@ function setLayer(k, on){
   stillDirty = true;
   if (k==="wind" && on) initParticles();
   if (k==="rain" && on) initRain();
+  if (k==="lights"){ document.body.classList.toggle("nolights", !on); return; }   // globe only, no legend
   layerDirty = true;
   buildLegend();
 }
@@ -2053,7 +2058,7 @@ function drawGlobe(){
   gctx.fillStyle=g; gctx.beginPath(); gctx.arc(cx,cy,R,0,TAU); gctx.fill();
   drawLand();
   drawGlobeLayer();
-  drawCityLights(R);                         // city dots; NASA's lights add over them from their own layer (screen blend, so order does not matter)
+  if (show.lights) drawCityLights(R);        // city dots; NASA's lights add over them from their own layer (screen blend, so order does not matter)
   g=gctx.createRadialGradient(cx,cy,R*0.72,cx,cy,R);
   g.addColorStop(0,"rgba(0,0,0,0)"); g.addColorStop(1,"rgba(2,4,10,.55)");
   gctx.fillStyle=g; gctx.beginPath(); gctx.arc(cx,cy,R,0,TAU); gctx.fill();
@@ -2499,7 +2504,7 @@ function buildCapture(scale=2){
   if (globe){
     x.fillStyle = "#06090f"; x.fillRect(0,0,W,H);
     x.drawImage(globeC,0,0,W,H);
-    if (nightReady){ x.save(); x.globalCompositeOperation = "screen"; x.drawImage(nightC,0,0,W,H); x.restore(); }
+    if (nightReady && show.lights){ x.save(); x.globalCompositeOperation = "screen"; x.drawImage(nightC,0,0,W,H); x.restore(); }
   } else {
     x.drawImage(mapC,0,0,W,H);
     x.drawImage(layerC,0,0,W,H);
@@ -2803,7 +2808,7 @@ function viewState(){
   const ll = centerLL();
   const st = { m: mode==="globe" ? "g" : "f", ll: [+clamp(ll.lat,-85,85).toFixed(2), +normLon(ll.lon).toFixed(2)],
     z: +(mode==="globe" ? gview.zoom : view.zoom).toFixed(2),
-    l: (show.wind?"w":"")+(show.temp?"t":"")+(show.rain?"r":""), s: silk && !cinema };
+    l: (show.wind?"w":"")+(show.temp?"t":"")+(show.rain?"r":""), s: silk && !cinema, n: show.lights };
   if (!followNow) st.t = Math.floor(displayTime/900000)*900000;      // to the quarter hour, as the time label shows it
   if (marker) st.p = [+marker.lat.toFixed(3), +normLon(marker.lon).toFixed(3)];
   return st;
@@ -2812,6 +2817,7 @@ function formatLink(st){
   const r = (v, d) => +(+v).toFixed(d);           // round here too: wrapping a longitude leaves float dust (143.65000000000003)
   const parts = ["m="+st.m, "ll="+st.ll.map(v=>r(v,2)).join(","), "z="+r(st.z,2), "l="+(st.l||"-")];
   if (st.s) parts.push("s=1");
+  if (st.n === false) parts.push("n=0");          // lights are on unless a link says otherwise
   if (st.t != null) parts.push("t="+new Date(st.t).toISOString().slice(0,16)+"Z");
   if (st.p) parts.push("p="+st.p.map(v=>r(v,3)).join(","));
   return "#"+parts.join("&");
@@ -2831,6 +2837,7 @@ function parseLink(hash){
   const z = num(q.get("z")); if (z!==null) st.z = z;
   const l = q.get("l"); if (l!==null && /^(-|[wtr]{1,3})$/.test(l)) st.l = l.replace("-","");
   if (q.get("s")==="1") st.s = true;
+  if (q.get("n")==="0") st.n = false;
   const t = q.get("t"); if (t && /^\d{4}-\d\d-\d\dT\d\d:\d\dZ$/.test(t)){ const ms = Date.parse(t); if (Number.isFinite(ms)) st.t = ms; }
   const p = pair(q.get("p")); if (p) st.p = [clamp(p[0],-85,85), normLon(p[1])];
   return st;
@@ -2845,6 +2852,7 @@ function applyLink(st, opts={}){
   if (!st || !Object.keys(st).length) return false;
   if (!opts.initial){ if (cinema) setCinema(false); setPlaying(false); }   // a link shows a moment: hold still on it
   if (st.l !== undefined) for (const k of ["wind","temp","rain"]) setLayer(k, st.l.includes(k[0]));
+  if (st.l !== undefined || st.n !== undefined) setLayer("lights", st.n !== false);
   if (!cinema && !!st.s !== silk) setSilk(!!st.s);
   const target = st.m==="f" ? "flat" : st.m==="g" ? "globe" : mode;
   if (st.ll){ view.lat = st.ll[0]; view.lon = st.ll[1]; gview.lat0 = st.ll[0]; gview.lon0 = st.ll[1]; userMovedAt = Date.now(); }
