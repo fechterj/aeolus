@@ -229,6 +229,7 @@ async function unitTests(p){
   ok(a.fieldUsable({ field: f, saved: now - 2e6 }, 1e6) === false, "cache: an old forecast is refused");
   ok(a.fieldUsable({ field: { hours: [1, 2, 3], t1: now / 1000 - 10 }, saved: now }, 1e6) === false, "cache: a forecast that ended is refused");
   ok(a.fieldUsable(null, 1e6) === false && a.fieldUsable({ saved: now }, 1e6) === false, "cache: junk is refused");
+  ok(a.cities >= 500, "enough cities for the lights to read as a map", a.cities + " cities");
   ok(/^rgba\(\d+,\d+,\d+,0\.6\)$/.test(a.speedColor(12)) && a.speedColor(-5) === a.speedColor(0) && a.speedColor(999) === a.speedColor(40),
      "wind colour scale clamps at both ends");
 }
