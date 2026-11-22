@@ -156,6 +156,7 @@ function forecastBody(q){
 /* a frame can be told to meet a failing forecast service: "minutely", "hourly", "daily" (rate limits) or "broken" */
 const faults = new Map(); let nextFault = null;
 window.__aeolusTestFetch = (win, realFetch) => {
+  if (nextFault === "nobitmap"){ try { win.createImageBitmap = undefined; } catch {} }   // like Safari before 15
   if (nextFault){ faults.set(win, nextFault); nextFault = null; }
   return serveFor(win, realFetch);
 };
@@ -520,11 +521,47 @@ async function faultTests(){
       if (inside){ disc++; if (A > 40) lit++; } else if (A > 8) outside++;
     }
     ok(lit / disc > 0.005 && outside === 0, "NASA night lights show on the globe and nowhere off it", (lit / disc * 100).toFixed(2) + "% of the disc lit, " + outside + " stray pixels");
+    // the two layers must agree: the shift that best lines the brightest cities up with NASA's lights is zero
+    const places = (await (await fetch("cities.json")).json()).places, pts = [];
+    for (const [lon, lat] of places.slice(0, 600)){ const pr = nl.win.gproj(lon, lat); if (pr.Z < 0.3) continue; const sc = nl.win.gscreen(pr); pts.push([sc.x * k, sc.y * k]); if (pts.length >= 200) break; }
+    const at = (x, y) => (x < 0 || y < 0 || x >= probe.width || y >= probe.height) ? 0 : d[(y * probe.width + x) * 4 + 3];
+    let best = { s: -1, dx: 0, dy: 0 };
+    for (let dy = -10; dy <= 10; dy++) for (let dx = -10; dx <= 10; dx++){
+      let s = 0; for (const [x, y] of pts) s += at(Math.round(x + dx), Math.round(y + dy));
+      if (s > best.s) best = { s, dx, dy };
+    }
+    ok(pts.length >= 50 && Math.abs(best.dx) <= 1 && Math.abs(best.dy) <= 1, "NASA's lights line up with the cities and coastlines", "best fit shifted " + best.dx + "," + best.dy + " px over " + pts.length + " cities");
+    // no line where longitude wraps behind the pole: that column must not stand out from its neighbours
+    // tilt the globe through a link (the app's security policy rightly refuses eval); silk holds the spin still
+    nl.win.location.hash = "#m=g&ll=60,30&z=1&l=-&s=1";
+    await sleep(500);
+    nl.win.drawGlobe(); nl.win.drawNight();
+    pc.clearRect(0, 0, probe.width, probe.height); pc.drawImage(cv, 0, 0);
+    const d2 = pc.getImageData(0, 0, probe.width, probe.height).data, g2 = nla.globe;
+    const colAvg = dx => { let s = 0, n = 0; for (let y = g2.cy - g2.r * 0.98; y < g2.cy - g2.r * 0.5; y++){ const X = Math.round((g2.cx + dx) * k), Y = Math.round(y * k); s += d2[(Y * probe.width + X) * 4 + 3]; n++; } return s / n; };
+    const seam = colAvg(0), side = Math.max(colAvg(-2), colAvg(2), 1);
+    ok(seam <= side * 1.5 + 2, "no seam line behind the pole", "seam column " + seam.toFixed(1) + " vs neighbours " + side.toFixed(1));
   }
   const nn = await open(375, 812, "", "nonight"), nna = nn.win.aeolus;
   await sleep(2500);
   ok(nna.nightSource === "dots" && !nn.$("#nightgl").classList.contains("ready") && !/problem starting/.test(nn.$("#toast").textContent),
      "if the night-lights image cannot load, the dots stay", nna.nightSource);
+
+  // without createImageBitmap (older Safari) the image still loads, through an <img>
+  const nb = await open(375, 812, "", "nobitmap"), nba = nb.win.aeolus;
+  const viaImg = await until(() => nba.nightSource === "Black Marble", 8000);
+  ok(typeof nb.win.createImageBitmap !== "function" && viaImg, "NASA lights load in browsers without createImageBitmap", nba.nightSource);
+
+  // the GPU drops its context and gets it back: the lights come back too
+  const ext = nb.win.document.getElementById("nightgl").getContext("webgl").getExtension("WEBGL_lose_context");
+  if (!ext || !viaImg) skip("NASA lights come back after the graphics context is lost", ext ? "lights never loaded" : "no WEBGL_lose_context");
+  else {
+    ext.loseContext(); await sleep(300);
+    const gone = nba.nightSource === "dots";
+    ext.restoreContext();
+    const back = await until(() => nba.nightSource === "Black Marble", 8000);
+    ok(gone && back, "NASA lights come back after the graphics context is lost", (gone ? "lost, " : "never lost, ") + nba.nightSource);
+  }
   await forgetForecasts();
 }
 
