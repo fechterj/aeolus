@@ -47,6 +47,12 @@ Then open http://127.0.0.1:8421/.
 
 To host it, put the three files on any static host. The public copy is served by GitHub Pages from the `main` branch of this repository. If you host it somewhere else, change the `og:url` and `og:image` addresses near the top of `index.html`.
 
+## Tests
+
+Open `test.html` from the same server as the app, for example http://127.0.0.1:8421/test.html. It loads the real app in a frame at four screen sizes (two upright phones, a phone on its side, and a laptop) and checks what a person would notice: everything fits, nothing overlaps, phone controls are at least 44 px, touch drag and pinch work, the keyboard works, and dialogs handle focus. It also checks the map projections and the forecast cache rules.
+
+The tests need the forecast service to answer. If it does not, the tests that depend on data are marked skipped rather than failed.
+
 ## Where the data comes from
 
 Aeolus has no server and no account. Your browser talks directly to these services:

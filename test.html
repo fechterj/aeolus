@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aeolus tests</title>
+<style>
+  body{margin:0;padding:16px;background:#06090f;color:#e9f0f7;font:14px/1.5 ui-sans-serif,system-ui,sans-serif}
+  h1{font-size:16px;letter-spacing:.2em;font-weight:600;margin:0 0 4px}
+  #sum{margin:0 0 14px;color:#8fa1b3}
+  h2{font-size:13px;margin:16px 0 6px;color:#6ee7ff;font-weight:600}
+  li{list-style:none;padding:2px 0;font-variant-numeric:tabular-nums}
+  ul{margin:0;padding:0}
+  .pass::before{content:"✓ ";color:#50dcbe}
+  .fail{color:#ff7a90}.fail::before{content:"✗ "}
+  .skip{color:#8fa1b3}.skip::before{content:"– "}
+  small{color:#8fa1b3}
+  #stage{position:fixed;right:8px;bottom:8px;border:1px solid rgba(255,255,255,.15);transform-origin:bottom right;
+    transform:scale(.3);background:#000;pointer-events:none}
+  iframe{display:block;border:0}
+</style>
+</head>
+<body>
+<h1>AEOLUS TESTS</h1>
+<p id="sum">running…</p>
+<div id="out"></div>
+<div id="stage"></div>
+<script>
+"use strict";
+/* Open this page from the same server as index.html (it will not work from file://).
+   It loads the real app in a frame at three screen sizes and checks what a person would notice:
+   that everything fits, that controls are big enough to touch, and that touch, keyboard and dialogs work.
+   Results are also left in window.testResults. */
+const out = document.getElementById("out"), stage = document.getElementById("stage");
+const results = []; window.testResults = results;
+let group = "";
+const section = name => { group = name; const h = document.createElement("h2"); h.textContent = name; out.append(h);
+  const ul = document.createElement("ul"); ul.id = "g" + results.length + Math.random(); out.append(ul); section.ul = ul; };
+function record(status, name, detail){
+  results.push({ group, name, status, detail: detail || "" });
+  const li = document.createElement("li"); li.className = status;
+  li.textContent = name; if (detail){ const s = document.createElement("small"); s.textContent = "  " + detail; li.append(s); }
+  section.ul.append(li);
+}
+const ok = (cond, name, detail) => record(cond ? "pass" : "fail", name, cond ? "" : detail);
+const skip = (name, why) => record("skip", name, why);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function until(fn, ms){ const t0 = performance.now(); while (performance.now() - t0 < ms){ if (fn()) return true; await sleep(100); } return false; }
+
+async function open(w, h){
+  stage.textContent = "";
+  const f = document.createElement("iframe");
+  f.width = w; f.height = h; f.src = "index.html?test=" + Date.now();
+  stage.append(f);
+  await new Promise(r => f.addEventListener("load", r, { once: true }));
+  const win = f.contentWindow, doc = f.contentDocument;
+  await until(() => win.aeolus, 5000);
+  return { f, win, doc, w, h, $: s => doc.querySelector(s), $$: s => [...doc.querySelectorAll(s)] };
+}
+const rect = el => { const b = el.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height }; };
+// not offsetParent: that is null for position:fixed elements, which is most of this page's chrome
+const shown = el => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
+const overlap = (a, b) => a.l < b.r - 1 && b.l < a.r - 1 && a.t < b.b - 1 && b.t < a.b - 1;
+function key(win, k, extra){ win.dispatchEvent(new win.KeyboardEvent("keydown", Object.assign({ key: k, bubbles: true, cancelable: true }, extra || {}))); }
+function touch(p, type, x, y, id){
+  p.$("#map").dispatchEvent(new p.win.PointerEvent(type, { pointerId: id || 1, pointerType: "touch", clientX: x, clientY: y, bubbles: true, isPrimary: true }));
+}
+
+/* ---------- pure logic ---------- */
+async function unitTests(p){
+  section("Logic");
+  const a = p.win.aeolus;
+  ok(a.normLon(200) === -160 && a.normLon(-190) === 170 && a.normLon(45) === 45 && a.normLon(180) === -180, "longitude wraps into -180…180",
+     [200, -190, 45, 180].map(a.normLon).join(","));
+  let worst = 0;
+  for (const [lon, lat] of [[a.globe.lon, a.globe.lat], [a.globe.lon + 30, a.globe.lat - 20], [a.globe.lon - 50, a.globe.lat + 35]]){
+    const s = a.gscreen(a.gproj(lon, lat)), back = a.gunproject(s.x, s.y);
+    if (!back){ worst = 999; break; }
+    worst = Math.max(worst, Math.abs(a.normLon(back.lon - lon)), Math.abs(back.lat - lat));
+  }
+  ok(worst < 1e-6, "globe: screen point maps back to the same place", "worst error " + worst + "°");
+  const g = a.globe;
+  ok(a.gunproject(g.cx + g.r * 1.05, g.cy) === null, "globe: a tap outside the disc is ignored");
+  ok(Math.abs(a.xToLon(a.lonToX(37.5)) - 37.5) < 1e-9 && Math.abs(a.yToLat(a.latToY(-51.2)) + 51.2) < 1e-9, "flat map: projection round-trips");
+  const now = Date.now(), f = { hours: [1, 2, 3], t1: now / 1000 + 3600 };
+  ok(a.fieldUsable({ field: f, saved: now }, 1e6) === true, "cache: a fresh forecast is usable");
+  ok(a.fieldUsable({ field: f, saved: now - 2e6 }, 1e6) === false, "cache: an old forecast is refused");
+  ok(a.fieldUsable({ field: { hours: [1, 2, 3], t1: now / 1000 - 10 }, saved: now }, 1e6) === false, "cache: a forecast that ended is refused");
+  ok(a.fieldUsable(null, 1e6) === false && a.fieldUsable({ saved: now }, 1e6) === false, "cache: junk is refused");
+  ok(/^rgba\(\d+,\d+,\d+,0\.6\)$/.test(a.speedColor(12)) && a.speedColor(-5) === a.speedColor(0) && a.speedColor(999) === a.speedColor(40),
+     "wind colour scale clamps at both ends");
+}
+
+/* ---------- one screen size ---------- */
+async function sizeTests(label, w, h, wantMobile){
+  section(label + " — " + w + "×" + h);
+  const p = await open(w, h), a = p.win.aeolus;
+  if (!a){ ok(false, "app starts", "no aeolus handle after 5 s"); return null; }
+  ok(true, "app starts");
+  ok(a.mobile === wantMobile, wantMobile ? "uses the phone layout" : "uses the wide layout", "mobile=" + a.mobile);
+  const gotData = await until(() => a.ready, 20000);
+  await sleep(600);
+  const loaderGone = p.$("#loader").classList.contains("gone");
+  ok(loaderGone, "loading screen clears", "still showing after 20 s");
+  if (!gotData) skip("forecast arrived", "no data (offline or rate-limited): " + (p.$("#toast").textContent || "no message"));
+  else ok(true, "forecast arrived");
+
+  // everything fits
+  ok(p.doc.documentElement.scrollWidth <= w && p.doc.documentElement.scrollHeight <= h, "page does not scroll",
+     p.doc.documentElement.scrollWidth + "×" + p.doc.documentElement.scrollHeight);
+  const controls = p.$$("button,input").filter(shown).filter(e => !e.closest("#chips"));
+  const outside = controls.filter(e => { const r = rect(e); return r.l < -1 || r.t < -1 || r.r > w + 1 || r.b > h + 1; });
+  ok(outside.length === 0, "every control is on screen", outside.map(e => e.id || e.textContent.trim()).join(", "));
+  const blocks = ["header", "#legend", "#zoomctl", wantMobile ? "#dock" : "#timebar"].map(s => [s, p.$(s)]).filter(x => x[1] && shown(x[1]));
+  const clashes = [];
+  for (let i = 0; i < blocks.length; i++) for (let j = i + 1; j < blocks.length; j++){
+    // header is a full-width strip on wide screens; compare its real children instead
+    const A = blocks[i][0] === "header" && !wantMobile ? ["#leftcol", "#topright"].map(s => rect(p.$(s))) : [rect(blocks[i][1])];
+    if (A.some(ra => overlap(ra, rect(blocks[j][1])))) clashes.push(blocks[i][0] + " × " + blocks[j][0]);
+  }
+  ok(clashes.length === 0, "panels do not sit on top of each other", clashes.join(", "));
+
+  if (wantMobile){
+    const small = p.$$("button,input").filter(shown).map(e => [e, rect(e)]).filter(x => x[1].w < 43.5 || x[1].h < 43.5);
+    ok(small.length === 0, "every control is at least 44 px to touch", small.map(x => (x[0].id || x[0].textContent.trim()) + " " + Math.round(x[1].w) + "×" + Math.round(x[1].h)).join(", "));
+    ok(parseFloat(getComputedStyle(p.$("#search")).fontSize) >= 16, "search text is 16 px, so iPhones do not zoom in on focus", getComputedStyle(p.$("#search")).fontSize);
+    const g = a.globe, top = rect(p.$("header")).b, bottom = rect(p.$("#dock")).t;
+    ok(g.cy - g.r >= top - 2 && g.cy + g.r <= bottom + 20, "globe sits between the top bar and the dock",
+       "disc " + Math.round(g.cy - g.r) + "…" + Math.round(g.cy + g.r) + ", free " + Math.round(top) + "…" + Math.round(bottom));
+    // upright, the legend strip sits between the globe and the dock
+    const floor = h >= w && shown(p.$("#legend")) ? rect(p.$("#legend")).t : bottom;
+    ok(g.cy + g.r <= floor + 2, "globe stays clear of the legend", "disc bottom " + Math.round(g.cy + g.r) + ", legend top " + Math.round(floor));
+    ok(g.r * 2 >= Math.min(w, floor - top) * 0.8, "globe uses most of the free space", "diameter " + Math.round(g.r * 2));
+    const chips = p.$("#chips");
+    ok(chips.scrollWidth > chips.clientWidth ? getComputedStyle(chips).overflowX === "auto" : true, "layer and mode row scrolls sideways when it does not fit");
+    const gb = rect(p.$("#globebtn"));
+    ok(gb.l >= 0 && gb.r <= w + 1, "globe switch is visible without scrolling", Math.round(gb.l) + "…" + Math.round(gb.r));
+  } else {
+    ok(!shown(p.$("#dock")), "dock is not used on a wide screen");
+    ok(p.$("#layers").parentNode.id === "leftcol" && p.$("#timebar").parentNode === p.doc.body, "controls are back in their wide-screen places");
+  }
+
+  // touch
+  const g0 = a.globe;
+  touch(p, "pointerdown", g0.cx, g0.cy); touch(p, "pointermove", g0.cx - 40, g0.cy); touch(p, "pointermove", g0.cx - 70, g0.cy + 5); touch(p, "pointerup", g0.cx - 70, g0.cy + 5);
+  ok(Math.abs(a.globe.lon - g0.lon) > 3, "dragging turns the globe", "lon moved " + (a.globe.lon - g0.lon).toFixed(2) + "°");
+  const r0 = a.globe.r;
+  touch(p, "pointerdown", g0.cx - 30, g0.cy, 1); touch(p, "pointerdown", g0.cx + 30, g0.cy, 2);
+  touch(p, "pointermove", g0.cx - 60, g0.cy, 1); touch(p, "pointermove", g0.cx + 60, g0.cy, 2);
+  touch(p, "pointerup", g0.cx - 60, g0.cy, 1); touch(p, "pointerup", g0.cx + 60, g0.cy, 2);
+  ok(a.globe.r > r0 * 1.2, "pinching zooms the globe", "radius ×" + (a.globe.r / r0).toFixed(2));
+  key(p.win, "-"); key(p.win, "-");
+  const g1 = a.globe;
+  touch(p, "pointerdown", g1.cx, g1.cy); touch(p, "pointerup", g1.cx, g1.cy);
+  const opened = await until(() => p.$("#panel").classList.contains("open"), 1500);
+  ok(opened, "tapping the globe opens the weather for that point");
+  if (opened){
+    await sleep(300);
+    const pr = rect(p.$("#panel"));
+    ok(pr.l >= 0 && pr.r <= w + 1 && pr.t >= 0 && pr.b <= h + 1, "weather panel fits on screen", [pr.l, pr.t, pr.r, pr.b].map(Math.round).join(","));
+    p.$("#panel .close").click();
+    ok(!p.$("#panel").classList.contains("open"), "weather panel closes");
+  }
+
+  // layers and legend
+  const temp = p.$('[data-l="temp"]');
+  temp.click();
+  ok(temp.getAttribute("aria-pressed") === "true" && p.$$("#legend .section").length === 2, "turning on temperature adds it to the legend");
+  if (wantMobile){ const lg = rect(p.$("#legend")), gg = a.globe; ok(lg.r <= w + 1 && lg.h < 110, "legend stays compact with two layers", Math.round(lg.w) + "×" + Math.round(lg.h)); }
+  temp.click();
+
+  // keyboard
+  const m0 = a.mode;
+  key(p.win, "g", { metaKey: true });
+  ok(a.mode === m0, "Cmd+G is left to the browser");
+  key(p.win, "g");
+  ok(a.mode !== m0, "G switches between globe and flat map");
+  key(p.win, "g");
+  const lon0 = a.globe.lon;
+  key(p.win, "ArrowRight");
+  ok(Math.abs(a.normLon(a.globe.lon - lon0) - 8) < 0.5, "right arrow turns the globe east", "moved " + a.normLon(a.globe.lon - lon0).toFixed(2) + "°");
+
+  // dialog
+  const hb = p.$("#helpbtn"); hb.focus(); hb.click();
+  const help = p.$("#help");
+  ok(help.classList.contains("open") && help.contains(p.doc.activeElement), "help opens and takes keyboard focus");
+  const hr = rect(p.$("#help .card"));
+  ok(hr.t >= 0 && hr.b <= h + 1 && hr.l >= 0 && hr.r <= w + 1, "help fits on screen", [hr.l, hr.t, hr.r, hr.b].map(Math.round).join(","));
+  key(p.win, "Escape");
+  ok(!help.classList.contains("open") && p.doc.activeElement === hb, "Escape closes help and returns focus");
+  return p;
+}
+
+(async () => {
+  try {
+    const phone = await sizeTests("Phone, upright", 375, 812, true);
+    if (phone) await unitTests(phone);
+    await sizeTests("Small phone", 320, 568, true);
+    await sizeTests("Phone, on its side", 812, 375, true);
+    await sizeTests("Tablet / laptop", 1280, 800, false);
+  } catch (e) {
+    section("Runner"); ok(false, "tests ran to the end", String(e && e.stack || e));
+  }
+  stage.textContent = "";
+  const n = s => results.filter(r => r.status === s).length;
+  const sum = document.getElementById("sum");
+  sum.textContent = n("pass") + " passed · " + n("fail") + " failed · " + n("skip") + " skipped";
+  sum.style.color = n("fail") ? "#ff7a90" : "#50dcbe";
+  window.testsDone = true;
+})();
+</script>
+</body>
+</html>

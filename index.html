@@ -214,23 +214,91 @@
       transition-duration:.01ms!important}
   }
 
-  @media (max-width:760px){
-    #brand p{display:none}
-    /* phone widths: brand, then search + buttons on their own full row, then the two toolbars */
-    header{flex-wrap:wrap;justify-content:flex-start;gap:10px;left:12px;right:12px;top:12px}
-    #leftcol{display:contents}
-    #topright{order:1;flex:1 1 240px;min-width:0}
-    #layers{order:2}
-    #xp{order:3;flex-wrap:wrap;max-width:100%}
-    #layers button,#xp button{padding:7px 10px}
-    #searchwrap{flex:1;min-width:0}
-    #search,#search:focus{width:100%}
-    #legend{display:none}
-    #timebar{max-width:calc(100vw - 40px);bottom:14px}
-    #panel{top:auto;bottom:76px;right:12px;left:12px;width:auto}
-    #zoomctl{right:12px;bottom:76px}
-    #timelabel{min-width:0}
+  /* ---------- touch and small-screen basics (all sizes) ---------- */
+  html,body{overscroll-behavior:none}
+  button,input{touch-action:manipulation}
+  header,#dock,#legend,#zoomctl{-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  #search{-webkit-user-select:text;user-select:text}
+  #dock{display:none}
+  #help .card{max-height:86vh;max-height:86dvh;overflow:auto}
+  #gallery .card{max-height:86dvh}
+  body.cinema #dock{opacity:0;pointer-events:none}
+
+  /* ============ phone layout ============
+     body.mobile is set by placeChrome(), which also moves the time bar, layers and modes into #dock.
+     Top: one row with the wordmark, search and help. Bottom: a dock in thumb reach with time on
+     top and a sideways-scrolling row of layers and modes under it. The globe sits in the space between.
+     Every control is at least 44 px, and the edges respect the phone's safe areas. */
+  body.mobile #brand p{display:none}
+  body.mobile header{top:calc(8px + env(safe-area-inset-top,0px));left:max(10px,env(safe-area-inset-left,0px));
+    right:max(10px,env(safe-area-inset-right,0px));gap:8px;align-items:center;justify-content:flex-start}
+  body.mobile #leftcol{display:contents}
+  body.mobile #brand{padding:0 12px;height:44px;display:flex;align-items:center;flex:none}
+  body.mobile #brand h1{font-size:13px;letter-spacing:.3em;text-indent:.3em}
+  body.mobile #topright{flex:1;min-width:0;gap:8px;align-items:center}
+  body.mobile #searchwrap{flex:1;min-width:0}
+  body.mobile #search,body.mobile #search:focus{width:100%;height:44px;font-size:16px;padding:0 14px}
+  body.mobile .iconbtn{width:44px;height:44px;flex:none}
+  body.mobile #units{width:auto;min-width:52px;padding:0 12px}
+
+  body.mobile #dock{display:flex;flex-direction:column;gap:8px;position:fixed;left:0;right:0;bottom:0;z-index:20;
+    padding:18px max(10px,env(safe-area-inset-left,0px)) calc(8px + env(safe-area-inset-bottom,0px)) max(10px,env(safe-area-inset-right,0px));
+    background:linear-gradient(to top,rgba(6,9,15,.94) 55%,rgba(6,9,15,0));pointer-events:none;transition:opacity .8s}
+  body.mobile #dock>*{pointer-events:auto}
+  body.mobile #timebar{position:static;transform:none;max-width:none;flex-wrap:wrap;gap:6px 10px;padding:8px 12px 6px}
+  body.mobile #timelabel{order:-1;flex:1 0 100%;min-width:0;text-align:left;font-size:12px}
+  body.mobile #timebar .tbtn{width:44px;height:44px}
+  body.mobile #nowbtn{width:auto;min-width:56px}
+  body.mobile #slider{min-width:0;padding:20px 0;background-clip:content-box;box-sizing:content-box}
+  body.mobile #slider::-webkit-slider-thumb{width:26px;height:26px}
+  body.mobile #slider::-moz-range-thumb{width:26px;height:26px}
+  body.mobile #chips{display:flex;gap:8px;align-items:center;overflow-x:auto;overscroll-behavior-x:contain;
+    scrollbar-width:none;-webkit-overflow-scrolling:touch;padding-right:28px;
+    -webkit-mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent);
+    mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent)}
+  body.mobile #chips::-webkit-scrollbar{display:none}
+  body.mobile #layers,body.mobile #xp{flex:none}
+  /* the globe/flat switch is the one people reach for: on a phone it leads the row as its own pill */
+  body.mobile #chips>#globebtn{flex:none;display:flex;align-items:center;gap:7px;min-height:52px;padding:0 16px;border-radius:14px;
+    background:var(--panel);border:1px solid var(--line);font-size:13px;letter-spacing:.08em;color:var(--dim);white-space:nowrap}
+  body.mobile #chips>#globebtn.on{color:var(--text);background:rgba(110,231,255,.14)}
+  body.mobile #layers button,body.mobile #xp button{min-height:44px;padding:0 14px;font-size:13px;white-space:nowrap}
+  body.mobile #attr{position:static;background:none;padding:0;text-align:center;font-size:9.5px;line-height:1.3}
+
+  body.mobile #legend{left:max(10px,env(safe-area-inset-left,0px));bottom:calc(var(--dock-h,170px) + 6px);
+    min-width:0;padding:8px 10px}
+  body.mobile #legend{display:flex;gap:10px;width:auto;right:max(10px,env(safe-area-inset-right,0px))}
+  body.mobile #legend .section{flex:1 1 0;min-width:86px}
+  body.mobile #legend .section + .section{margin-top:0;padding-top:0;border-top:none;border-left:1px solid var(--line);padding-left:10px}
+  body.mobile #legend .labels{font-size:9.5px}
+  body.mobile #legend .title{font-size:9.5px;letter-spacing:.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* a phone on its side has little height: time and modes share one row */
+  @media (orientation:landscape){
+    body.mobile #dock{flex-direction:row;flex-wrap:wrap;align-items:center;padding-top:10px}
+    body.mobile #timebar{flex:1 1 300px;flex-wrap:nowrap;padding:6px 12px}
+    body.mobile #timelabel{order:0;flex:none;text-align:right}
+    body.mobile #chips{flex:1 1 300px;min-width:0}
+    body.mobile #attr{flex:1 0 100%}
+    body.mobile #legend{right:auto;max-width:56vw}
+    body.mobile #zoomctl{bottom:calc(var(--dock-h,170px) + 6px)}
   }
+  body.mobile #zoomctl{right:max(10px,env(safe-area-inset-right,0px));bottom:calc(var(--dock-h,170px) + var(--legend-h,70px) + 12px)}
+  body.mobile #zoomctl button{width:44px;height:44px}
+  body.mobile #panel{top:auto;left:max(10px,env(safe-area-inset-left,0px));right:max(10px,env(safe-area-inset-right,0px));
+    width:auto;bottom:calc(var(--dock-h,170px) + 6px);
+    max-height:calc(100vh - var(--dock-h,170px) - var(--top-h,60px) - 20px);
+    max-height:calc(100dvh - var(--dock-h,170px) - var(--top-h,60px) - 20px);overflow:auto;padding:16px}
+  body.mobile #panel .close{width:44px;height:44px;top:0;right:0}
+  body.mobile #pspeed{font-size:36px}
+  body.mobile #toast{top:calc(var(--top-h,60px) + 10px);max-width:calc(100vw - 24px);width:max-content}
+  body.mobile #galgrid{grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:8px}
+  body.mobile #gallery .card,body.mobile #help .card{padding:20px 16px;width:calc(100vw - 20px)}
+  body.mobile #gallery .close,body.mobile #help .close{width:44px;height:44px;top:2px;right:2px}
+  body.mobile #lbbtns{bottom:calc(16px + env(safe-area-inset-bottom,0px))}
+  body.mobile #lbbtns button{min-height:44px}
+  body.mobile #lbcap{bottom:calc(72px + env(safe-area-inset-bottom,0px))}
+  body.mobile #lbimg{max-height:66vh;max-height:66dvh}
+  body.mobile #help li{font-size:14px}
 </style>
 </head>
 <body>
@@ -526,6 +594,7 @@ function sizeCanvases(){
   mapDirty = true; layerDirty = true;
   layerGeom();
   makeStars();
+  placeChrome();
 }
 
 /* ---------------- tiles ---------------- */
@@ -1100,7 +1169,7 @@ fxC.style.pointerEvents = "none";
 mapC.style.touchAction = "none";
 mapC.addEventListener("pointerdown", e=>{
   if (cinema){ setCinema(false); cinemaExitClick = true; }
-  mapC.setPointerCapture(e.pointerId);
+  try{ mapC.setPointerCapture(e.pointerId); }catch{}      // capture is a nicety; never let it break a touch
   pointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
   if (pointers.size === 1){
     dragInfo = { x:e.clientX, y:e.clientY, lon:view.lon, lat:view.lat,
@@ -1210,9 +1279,14 @@ function onViewChanged(zoomed){
   layerGeom();
   clearTrails();
 }
-addEventListener("resize", ()=>{
-  sizeCanvases(); initParticles(); initRain(); scheduleField(200);
-});
+function onResize(){
+  // a phone's on-screen keyboard shrinks the window while you type in search: not a real resize
+  if (document.activeElement === searchEl && innerWidth === W) return;
+  sizeCanvases(); initParticles(); initRain();
+  if (gparts.length) initGlobeParticles();
+  scheduleField(200);
+}
+addEventListener("resize", onResize);
 
 /* ---------------- layers & legend ---------------- */
 const tempUnit = () => unit().name==="mph" ? {f:c=>c*9/5+32, s:"°F"} : {f:c=>c, s:"°C"};
@@ -1437,7 +1511,7 @@ const gview = { lon0:-30, lat0:22, zoom:1 };
 const GZMIN = 0.6, GZMAX = 3.2;
 let gfield = null, gAbort = null, gSeq = 0;
 let gparts = [], landFeats = null, starC = null;
-const globeR = () => Math.min(W,H)*0.38*gview.zoom;
+const globeR = () => GRB*gview.zoom;
 const centerLL = () => mode==="globe" ? {lon:gview.lon0, lat:gview.lat0} : {lon:view.lon, lat:view.lat};
 
 /* major world cities: [lon, lat, brightness] */
@@ -1513,9 +1587,9 @@ function gproj(lon,lat){
   const cl = Math.cos(lat*D2R);
   return gprojXYZ(cl*Math.cos(lon*D2R), cl*Math.sin(lon*D2R), Math.sin(lat*D2R));
 }
-function gscreen(p){ const R=globeR(); return { x:W/2+R*p.X, y:H/2-R*p.Y, z:p.Z }; }
+function gscreen(p){ const R=globeR(); return { x:GCX+R*p.X, y:GCY-R*p.Y, z:p.Z }; }
 function gunproject(px,py){
-  const R=globeR(), X=(px-W/2)/R, Y=(H/2-py)/R, d=X*X+Y*Y;
+  const R=globeR(), X=(px-GCX)/R, Y=(GCY-py)/R, d=X*X+Y*Y;
   if (d>1) return null;
   const Z=Math.sqrt(1-d), l0=gview.lat0*D2R;
   const lat=Math.asin(Z*Math.sin(l0)+Y*Math.cos(l0))/D2R;
@@ -1537,7 +1611,7 @@ function makeStars(){
 
 function drawLand(){
   if (!landFeats) return;
-  const R=globeR(), cx=W/2, cy=H/2;
+  const R=globeR(), cx=GCX, cy=GCY;
   gctx.save();
   gctx.beginPath(); gctx.arc(cx,cy,R,0,TAU); gctx.clip();
   gctx.fillStyle = "#152238";
@@ -1589,7 +1663,7 @@ function drawLand(){
 }
 
 function drawGlobe(){
-  const R=globeR(), cx=W/2, cy=H/2;
+  const R=globeR(), cx=GCX, cy=GCY;
   gctx.clearRect(0,0,W,H);
   if (starC) gctx.drawImage(starC,0,0,W,H);
   let g=gctx.createRadialGradient(cx,cy,R*0.92,cx,cy,R*1.22);
@@ -1738,7 +1812,7 @@ goff.width = GL; goff.height = GL;
 const goctx = goff.getContext("2d");
 function drawGlobeLayer(){
   if (!gfield || (!show.temp && !show.rain)) return;
-  const R=globeR(), cx=W/2, cy=H/2;
+  const R=globeR(), cx=GCX, cy=GCY;
   if (!(quality>=1 && (++glFrame & 1) && glValid)){   // on a struggling device, recompute every other frame
   const img=goctx.createImageData(GL,GL), d=img.data;
   const l0=gview.lat0*D2R, sl0=Math.sin(l0), cl0=Math.cos(l0);
@@ -1785,7 +1859,7 @@ function spawnG(p){
 }
 function initGlobeParticles(){
   gparts=[];
-  const n=quality>=2?1430:2600;
+  const base=isMobile?1600:2600, n=quality>=2?Math.round(base*0.55):base;
   for (let i=0;i<n;i++){ const p=spawnG({}); p.age=Math.random()*p.max; gparts.push(p); }
 }
 function stepGlobe(){
@@ -1972,6 +2046,7 @@ function setCinema(on){
   if (on === cinema) return;
   cinema = on;
   document.body.classList.toggle("cinema", on);
+  measureChrome();                            // cinema uses the whole screen
   $("#cinebtn").classList.toggle("on", on);
   $("#cinebtn").setAttribute("aria-pressed", on);
   if (on){
@@ -2034,12 +2109,24 @@ function buildCapture(scale=2){
 function capture(){
   try{
     const cv = buildCapture();
-    const url = cv.toDataURL("image/png");
     const d = new Date(displayTime), ll = centerLL();
-    const a = document.createElement("a");
-    a.download = `aeolus-${d.toISOString().slice(0,10)}-${ll.lat.toFixed(1)}_${ll.lon.toFixed(1)}.png`;
-    a.href = url;
-    a.click();
+    const name = `aeolus-${d.toISOString().slice(0,10)}-${ll.lat.toFixed(1)}_${ll.lon.toFixed(1)}.png`;
+    const download = ()=>{
+      const a = document.createElement("a");
+      a.download = name;
+      a.href = cv.toDataURL("image/png");
+      a.click();
+    };
+    // on a phone the share sheet (save to photos, send to someone) beats a download nobody can find
+    if (isMobile && navigator.canShare && navigator.share){
+      cv.toBlob(async blob=>{
+        try{
+          const f = new File([blob], name, {type:"image/png"});
+          if (navigator.canShare({files:[f]})) await navigator.share({files:[f], title:"Aeolus"});
+          else download();
+        }catch(e){ if (!e || e.name !== "AbortError") download(); }   // closing the sheet is not an error
+      }, "image/png");
+    } else download();
     saveSky(cv, false).then(rec=>{
       showToast(rec ? "Saved your sky ✦ — also kept in your gallery" : "Saved your sky ✦");
     });
@@ -2060,6 +2147,72 @@ function startupProblem(msg){
 addEventListener("error", e=>startupProblem("Aeolus hit a problem starting: "+(e.message||"unknown error")));
 addEventListener("unhandledrejection", e=>startupProblem("Aeolus hit a problem starting: "+((e.reason&&e.reason.message)||e.reason||"unknown error")));
 setTimeout(()=>startupProblem("The wind data is taking too long to arrive."), 30000);
+
+/* ---------------- phone-first chrome ----------------
+   One set of controls, two arrangements. On a phone the time bar, layers and modes live in a
+   dock at the bottom; on a wide screen they go back where the markup has them. */
+const mobileMQ = matchMedia("(max-width:760px), (max-height:520px)");
+const dock = document.createElement("div"); dock.id = "dock";
+const chips = document.createElement("div"); chips.id = "chips";
+chips.setAttribute("role","group"); chips.setAttribute("aria-label","Layers and modes");
+dock.append(chips);
+document.body.append(dock);
+const movers = ["#timebar","#layers","#xp","#globebtn","#locate","#units","#attr"].map(sel=>{
+  const el = $(sel);
+  return { el, parent: el.parentNode, next: el.nextSibling };
+});
+let isMobile = null;
+let GCX = innerWidth/2, GCY = innerHeight/2, GRB = Math.min(innerWidth,innerHeight)*0.38;   // globe centre and base radius
+function placeChrome(){
+  const m = mobileMQ.matches;
+  if (m !== isMobile){
+    isMobile = m;
+    document.body.classList.toggle("mobile", m);
+    if (m){
+      dock.prepend($("#timebar"));
+      chips.append($("#globebtn"), $("#layers"), $("#xp"), $("#locate"), $("#units"));
+      dock.append($("#attr"));
+    } else {
+      for (const mv of [...movers].reverse())
+        mv.parent.insertBefore(mv.el, mv.next && mv.next.parentNode === mv.parent ? mv.next : null);
+    }
+    $("#cinehint").textContent = m ? "tap anywhere to return" : "click anywhere to return";
+  }
+  measureChrome();
+}
+function measureChrome(){
+  if (isMobile === null) return;
+  const top = isMobile ? Math.round($("header").getBoundingClientRect().bottom) : 0;
+  const dockH = isMobile ? Math.round(dock.getBoundingClientRect().height) : 0;
+  const rs = document.documentElement.style;
+  rs.setProperty("--top-h", top+"px");
+  rs.setProperty("--dock-h", dockH+"px");
+  const legendH = isMobile ? Math.round($("#legend").getBoundingClientRect().height) : 0;
+  rs.setProperty("--legend-h", legendH+"px");
+  const reserve = isMobile && H >= W ? legendH+6 : 0;   // upright: the legend strip sits between the globe and the dock
+  const m = isMobile && !cinema;                 // cinema hides the chrome and uses the whole screen
+  const freeTop = m ? top : 0, freeH = Math.max(140, (m ? H-dockH-reserve : H) - freeTop);
+  const nx = W/2, ny = m ? freeTop+freeH/2 : H/2;
+  const nr = m ? Math.min(W*0.46, freeH*0.46) : Math.min(W,H)*0.38;
+  if (nx !== GCX || ny !== GCY || nr !== GRB){ GCX = nx; GCY = ny; GRB = nr; clearTrails(); }
+}
+if (mobileMQ.addEventListener) mobileMQ.addEventListener("change", placeChrome);
+if (window.ResizeObserver){
+  const ro = new ResizeObserver(()=>measureChrome());
+  ro.observe(dock); ro.observe($("header")); ro.observe($("#legend"));
+}
+searchEl.addEventListener("blur", ()=>setTimeout(()=>{          // keyboard gone: catch up if the window really changed
+  if (innerWidth !== W || innerHeight !== H) onResize();
+}, 350));
+
+/* a small read-only handle for test.html and for poking at the page from the console */
+window.aeolus = {
+  normLon, gproj, gscreen, gunproject, fieldUsable, lonToX, xToLon, latToY, yToLat, speedColor,
+  get mode(){ return mode; }, get quality(){ return quality; }, get mobile(){ return isMobile; },
+  get reduced(){ return reduced; }, get ready(){ return !!activeField(); },
+  get show(){ return {...show}; }, get globe(){ return { cx:GCX, cy:GCY, r:globeR(), lon:gview.lon0, lat:gview.lat0 }; },
+  get view(){ return {...view}; }, get size(){ return { W, H }; },
+};
 
 /* ---------------- init ---------------- */
 sizeCanvases();
