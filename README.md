@@ -52,7 +52,7 @@ To host it, put the three files on any static host. The public copy is served by
 
 Open `test.html` from the same server as the app, for example http://127.0.0.1:8421/test.html. It loads the real app in a frame at four screen sizes (two upright phones, a phone on its side, and a laptop) and checks what a person would notice: everything fits, nothing overlaps, phone controls are at least 44 px, touch drag and pinch work, the keyboard works, and dialogs handle focus. It also checks the map projections and the forecast cache rules.
 
-The tests need the forecast service to answer. If it does not, the tests that depend on data are marked skipped rather than failed.
+The tests cost no forecast requests. The test page answers every frame's forecast requests itself, from one saved forecast: its own saved copy, else the app's cached forecast, else one real request that it keeps for next time, else a made-up forecast. The summary line says which it used and how many requests went to the forecast service (normally 0).
 
 ## Where the data comes from
 

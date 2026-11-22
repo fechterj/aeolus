@@ -463,6 +463,17 @@
 
 <script>
 "use strict";
+/* test.html runs the app in frames and answers its forecast requests itself, from one saved forecast,
+   so a test run costs no requests. Only a same-origin page that defines this hook can use it; anywhere
+   else the check throws or finds nothing and the app runs as normal. Test frames also keep their own
+   forecast cache, so test data never shows up in the real app. */
+let TEST_DB = "";
+try{
+  if (window.parent !== window && typeof window.parent.__aeolusTestFetch === "function"){
+    window.fetch = window.parent.__aeolusTestFetch(window, window.fetch.bind(window));
+    TEST_DB = "-test";
+  }
+}catch{}
 /* ================================================================
    AEOLUS — the living wind
    A self-contained live wind visualization.
@@ -502,7 +513,7 @@ const FIELD_TTL = 30*60*1000, FIELD_STALE = 48*3600*1000;
 let cacheDBp = null;
 function cacheOpen(){
   if (!cacheDBp) cacheDBp = new Promise((res,rej)=>{
-    const rq = indexedDB.open("aeolus-cache",1);
+    const rq = indexedDB.open("aeolus-cache"+TEST_DB,1);
     rq.onupgradeneeded = ()=>{ rq.result.createObjectStore("fields",{keyPath:"k"}); };
     rq.onsuccess = ()=>res(rq.result);
     rq.onerror = ()=>rej(rq.error);

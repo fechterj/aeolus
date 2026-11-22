@@ -31,6 +31,9 @@
    It loads the real app in a frame at three screen sizes and checks what a person would notice:
    that everything fits, that controls are big enough to touch, and that touch, keyboard and dialogs work.
    Results are also left in window.testResults.
+   Forecasts cost nothing: every frame's forecast requests are answered here, from one saved forecast.
+   That forecast is the test page's own saved copy, else the real app's cached one, else one real request
+   (kept for next time), else a made-up one. The summary line says which.
    Run it in a visible browser tab: a hidden or background tab is not told about size changes, so the
    "turned and resized" checks fail there even though the app is fine. */
 const out = document.getElementById("out"), stage = document.getElementById("stage");
@@ -48,6 +51,127 @@ const ok = (cond, name, detail) => record(cond ? "pass" : "fail", name, cond ? "
 const skip = (name, why) => record("skip", name, why);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function until(fn, ms){ const t0 = performance.now(); while (performance.now() - t0 < ms){ if (fn()) return true; await sleep(100); } return false; }
+
+/* ---------- one saved forecast, served to every frame ---------- */
+const netLog = [];                    // every request a frame made through the hook
+let seed = null, forecastSource = "none", realRequests = 0;
+const GCOLS = 24, GROWS = 12;
+function idbGet(db, store, key, create){
+  return new Promise(res => {
+    let rq; try { rq = indexedDB.open(db); } catch { return res(null); }
+    rq.onupgradeneeded = () => { if (create) rq.result.createObjectStore(store, { keyPath: "k" }); else rq.transaction.abort(); };
+    rq.onerror = () => res(null);
+    rq.onsuccess = () => {
+      const d = rq.result;
+      try { const g = d.transaction(store).objectStore(store).get(key); g.onsuccess = () => { res(g.result || null); d.close(); }; g.onerror = () => { res(null); d.close(); }; }
+      catch { d.close(); res(null); }
+    };
+  });
+}
+function idbPut(db, store, rec){
+  return new Promise(res => {
+    let rq; try { rq = indexedDB.open(db, 1); } catch { return res(false); }
+    rq.onupgradeneeded = () => rq.result.createObjectStore(store, { keyPath: "k" });
+    rq.onerror = () => res(false);
+    rq.onsuccess = () => {
+      const d = rq.result;
+      try { const tx = d.transaction(store, "readwrite"); tx.objectStore(store).put(rec); tx.oncomplete = () => { d.close(); res(true); }; tx.onerror = tx.onabort = () => { d.close(); res(false); }; }
+      catch { d.close(); res(false); }
+    };
+  });
+}
+// usable for testing: the 24 x 12 world grid, and "now" through the next six hours inside it
+const seedUsable = f => !!(f && f.cols === GCOLS && f.rows === GROWS && Array.isArray(f.hours) && f.hours.length > 6 && f.hours[0].u && f.hours[0].u.length === GCOLS * GROWS
+  && f.t0 * 1000 <= Date.now() && f.t1 * 1000 >= Date.now() + 6 * 3600e3);
+async function fetchSeed(){
+  const lats = [], lons = [];
+  for (let r = 0; r < GROWS; r++){ const la = 84 - 168 * r / (GROWS - 1); for (let c = 0; c < GCOLS; c++){ lats.push(la.toFixed(2)); lons.push((-180 + 360 * c / GCOLS).toFixed(2)); } }
+  realRequests++;
+  const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude=" + lats.join(",") + "&longitude=" + lons.join(",")
+    + "&hourly=wind_speed_10m,wind_direction_10m,temperature_2m,precipitation&wind_speed_unit=ms&forecast_days=3&timezone=GMT&timeformat=unixtime");
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!Array.isArray(data) || data.length !== GCOLS * GROWS) return null;
+  const times = data[0].hourly.time, hours = times.map(tm => ({ t: tm, u: new Float32Array(data.length), v: new Float32Array(data.length), tp: new Float32Array(data.length), pr: new Float32Array(data.length) }));
+  data.forEach((pt, j) => times.forEach((_, h) => {
+    const s = pt.hourly.wind_speed_10m[h] ?? 0, d = (pt.hourly.wind_direction_10m[h] ?? 0) * Math.PI / 180;
+    hours[h].u[j] = -s * Math.sin(d); hours[h].v[j] = -s * Math.cos(d);
+    hours[h].tp[j] = pt.hourly.temperature_2m[h] ?? 0; hours[h].pr[j] = pt.hourly.precipitation[h] ?? 0;
+  }));
+  return { lon0: -180, span: 360, latN: 84, latS: -84, cols: GCOLS, rows: GROWS, hours, t0: times[0], t1: times[times.length - 1], at: Date.now() };
+}
+function madeUpSeed(){
+  const n = GCOLS * GROWS, t0 = Math.floor(Date.now() / 3600e3) * 3600 - 2 * 3600, hours = [];
+  for (let h = 0; h < 72; h++){
+    const o = { t: t0 + h * 3600, u: new Float32Array(n), v: new Float32Array(n), tp: new Float32Array(n), pr: new Float32Array(n) };
+    for (let r = 0; r < GROWS; r++) for (let c = 0; c < GCOLS; c++){
+      const j = r * GCOLS + c, la = 84 - 168 * r / (GROWS - 1), lo = -180 + 360 * c / GCOLS;
+      o.u[j] = 9 * Math.cos(la * Math.PI / 60) + 2 * Math.sin((lo + h * 5) * Math.PI / 90); o.v[j] = 3 * Math.sin((lo - h * 3) * Math.PI / 45);
+      o.tp[j] = 28 - Math.abs(la) * 0.6; o.pr[j] = Math.max(0, 5 * Math.exp(-((la - 8) ** 2 + ((lo - 20 + h) % 360) ** 2) / 500));
+    }
+    hours.push(o);
+  }
+  return { lon0: -180, span: 360, latN: 84, latS: -84, cols: GCOLS, rows: GROWS, hours, t0, t1: t0 + 71 * 3600, at: Date.now() };
+}
+const utc = ms => new Date(ms).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+async function prepareForecast(){
+  const own = await idbGet("aeolus-cache-test", "fields", "seed", true);
+  if (own && seedUsable(own.field)){ seed = own.field; forecastSource = "saved real forecast from " + utc(seed.at || own.saved) + " (the test page's copy)"; return; }
+  const app = await idbGet("aeolus-cache", "fields", "globe", false);
+  if (app && seedUsable(app.field)){ seed = app.field; forecastSource = "saved real forecast from " + utc(app.field.at || app.saved) + " (the app's cache)"; }
+  else {
+    try { seed = await fetchSeed(); } catch { seed = null; }
+    if (seedUsable(seed)) forecastSource = "real forecast fetched just now";
+    else { seed = madeUpSeed(); forecastSource = "made-up forecast (no saved one, and the service refused)"; return; }
+  }
+  await idbPut("aeolus-cache-test", "fields", { k: "seed", saved: Date.now(), field: seed });
+}
+function sampleSeed(lat, lon, h){
+  const f = seed, fx = (((lon + 180) % 360 + 360) % 360) / 360 * f.cols;
+  const fy = Math.min(Math.max((f.latN - lat) / (f.latN - f.latS) * (f.rows - 1), 0), f.rows - 1);
+  const x0 = Math.floor(fx) % f.cols, x1 = (x0 + 1) % f.cols, tx = fx - Math.floor(fx);
+  const y0 = Math.floor(fy), y1 = Math.min(y0 + 1, f.rows - 1), ty = fy - y0, A = f.hours[h];
+  const bl = k => { const a = A[k]; return (a[y0 * f.cols + x0] * (1 - tx) + a[y0 * f.cols + x1] * tx) * (1 - ty) + (a[y1 * f.cols + x0] * (1 - tx) + a[y1 * f.cols + x1] * tx) * ty; };
+  return { u: bl("u"), v: bl("v"), tp: bl("tp"), pr: bl("pr") };
+}
+const speedDir = s => [+Math.hypot(s.u, s.v).toFixed(2), Math.round(((Math.atan2(-s.u, -s.v) * 180 / Math.PI) + 360) % 360)];
+function forecastBody(q){
+  const lats = (q.get("latitude") || "").split(",").map(Number), lons = (q.get("longitude") || "").split(",").map(Number);
+  const times = seed.hours.map(h => h.t), H = seed.hours.length;
+  if (q.get("current")){                // the weather panel: one point, now, plus the next hours of wind
+    const lat = lats[0], lon = lons[0], hc = Math.min(H - 1, Math.max(0, Math.round((Date.now() / 1000 - seed.t0) / 3600)));
+    const s = sampleSeed(lat, lon, hc), [sp, dir] = speedDir(s);
+    return { latitude: lat, longitude: lon,
+      current: { wind_speed_10m: sp, wind_direction_10m: dir, wind_gusts_10m: +(sp * 1.5).toFixed(1), temperature_2m: +s.tp.toFixed(1), weather_code: s.pr > 0.2 ? 61 : 2, precipitation: +Math.max(0, s.pr).toFixed(1) },
+      hourly: { time: times, wind_speed_10m: times.map((_, h) => speedDir(sampleSeed(lat, lon, h))[0]) } };
+  }
+  const pts = lats.map((lat, i) => {
+    const ws = [], wd = [], tp = [], pr = [];
+    for (let h = 0; h < H; h++){ const s = sampleSeed(lat, lons[i], h), [sp, dir] = speedDir(s); ws.push(sp); wd.push(dir); tp.push(+s.tp.toFixed(1)); pr.push(+Math.max(0, s.pr).toFixed(2)); }
+    return { latitude: lat, longitude: lons[i], hourly: { time: times, wind_speed_10m: ws, wind_direction_10m: wd, temperature_2m: tp, precipitation: pr } };
+  });
+  return pts.length === 1 ? pts[0] : pts;
+}
+/* the hook index.html looks for: forecasts and place names come from here, everything else is real */
+window.__aeolusTestFetch = (win, realFetch) => (input, opts) => {
+  const url = String(input && input.url || input);
+  let u; try { u = new URL(url, win.location.href); } catch { return realFetch(input, opts); }
+  const reply = body => new Promise((res, rej) => setTimeout(() => {
+    if (opts && opts.signal && opts.signal.aborted){ rej(new win.DOMException("aborted", "AbortError")); return; }
+    res(new win.Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
+  }, 15));
+  if (u.hostname === "api.open-meteo.com" && seed){
+    const kind = u.searchParams.get("current") ? "point" : ((u.searchParams.get("latitude") || "").includes(",") ? "grid" : "point");
+    netLog.push({ win, kind, url });
+    return reply(forecastBody(u.searchParams));
+  }
+  if (u.hostname === "api.bigdatacloud.net"){
+    netLog.push({ win, kind: "place", url });
+    return reply({ city: "Test point", principalSubdivision: "", countryName: "Testland" });
+  }
+  netLog.push({ win, kind: "real", url });
+  return realFetch(input, opts);
+};
 
 async function open(w, h, hash){
   stage.textContent = "";
@@ -302,8 +426,7 @@ async function reflowTests(){
 
   // request budget: on a zoomed-out flat map, moving about must not re-download the forecast each time
   section("Request budget");
-  p.win.performance.setResourceTimingBufferSize(3000);
-  const grids = () => p.win.performance.getEntriesByType("resource").filter(e => e.name.includes("api.open-meteo.com/v1/forecast") && e.name.length > 1500).length;
+  const grids = () => netLog.filter(n => n.win === p.win && n.kind === "grid").length;
   key(p.win, "g");
   for (let i = 0; i < 5; i++) key(p.win, "-");
   const flatReady = await until(() => a.mode === "flat" && a.ready, 15000);
@@ -321,6 +444,7 @@ async function reflowTests(){
 
 (async () => {
   try {
+    await prepareForecast();
     const phone = await sizeTests("Phone, upright", 375, 812, true);
     if (phone) await unitTests(phone);
     await sizeTests("Small phone", 320, 568, true);
@@ -335,6 +459,12 @@ async function reflowTests(){
   const n = s => results.filter(r => r.status === s).length;
   const sum = document.getElementById("sum");
   sum.textContent = n("pass") + " passed · " + n("fail") + " failed · " + n("skip") + " skipped";
+  const served = netLog.filter(x => x.kind === "grid" || x.kind === "point").length;
+  const info = document.createElement("small");
+  info.textContent = "  ·  forecast: " + forecastSource + " · " + served + " forecast requests answered locally, "
+    + realRequests + " sent to the forecast service";
+  sum.append(info);
+  window.testForecast = { source: forecastSource, served, realRequests };
   sum.style.color = n("fail") ? "#ff7a90" : "#50dcbe";
   window.testsDone = true;
 })();
