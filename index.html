@@ -31,7 +31,10 @@
     -webkit-font-smoothing:antialiased}
   canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
   #fx,#layer,#bloom,#globe,#gfx{pointer-events:none}
-  #globe,#gfx{display:none}
+  #globe,#gfx,#nightgl{display:none}
+  /* NASA's night lights sit over the globe and add their light to it (black adds nothing) */
+  #nightgl{pointer-events:none;mix-blend-mode:screen}
+  body.globe #nightgl.ready{display:block}
   body.globe #layer,body.globe #fx{display:none}
   body.globe #map{opacity:0}   /* stays in the tree: it is the input surface for both modes */
   body.globe #globe,body.globe #gfx{display:block}
@@ -329,6 +332,7 @@
 <canvas id="layer" aria-hidden="true"></canvas>
 <canvas id="fx" aria-hidden="true"></canvas>
 <canvas id="globe" aria-hidden="true"></canvas>
+<canvas id="nightgl" aria-hidden="true"></canvas>
 <canvas id="gfx" aria-hidden="true"></canvas>
 <canvas id="bloom" aria-hidden="true"></canvas>
 <div id="vignette"></div>
@@ -405,7 +409,7 @@
   <button id="zout" title="Zoom out (−)" aria-label="Zoom out">−</button>
 </div>
 
-<div id="attr">tiles © <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> · HERE · Garmin · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OSM</a> · data <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> · outlines Natural Earth</div>
+<div id="attr">tiles © <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> · HERE · Garmin · © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OSM</a> · data <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> · outlines Natural Earth · lights NASA</div>
 <div id="toast" class="glass" role="status" aria-live="polite"></div>
 
 <div id="loader">
@@ -446,7 +450,7 @@
       <li><b>Slider</b> scrubs up to 3 days of forecast · <b>NOW</b> returns to the present</li>
       <li><b>Layers</b> — toggle wind streamlines, the temperature field and live rain</li>
       <li><b>Silk</b> — long-exposure mode: the wind paints itself into ribbons of light</li>
-      <li><b>Cinema</b> — everything disappears and the atmosphere performs · <b>Capture</b> saves it as a poster</li>      <li><b>Globe</b> (G) — the same wind, temperature and rain wrapping a turning night Earth, with the lights of more than 500 cities</li>
+      <li><b>Cinema</b> — everything disappears and the atmosphere performs · <b>Capture</b> saves it as a poster</li>      <li><b>Globe</b> (G) — the same wind, temperature and rain wrapping a turning night Earth, with the lights of more than 7,000 cities and towns</li>
       <li><b>Gallery</b> — every sky you capture is kept on this device; cinema collects them as it plays</li>
       <li><b>Search</b> flies to any place on Earth</li>
       <li><b>Share</b> — a link that opens this exact view: place, zoom, layers, time and the point you opened. The address bar keeps up as you move</li>
@@ -455,6 +459,7 @@
     </ul>
     <div class="credit">
       Wind data: Open-Meteo blended forecast models (ICON · GFS · ECMWF), updated hourly, free &amp; open.
+      Night lights: NASA Earth Observatory, Black Marble 2016 (Suomi NPP VIIRS), public domain; city dots from Natural Earth populated places (public domain).
       Basemap: Esri dark gray canvas (Esri, HERE, Garmin, © OpenStreetMap contributors, and the GIS user community).
       No accounts, no keys, no tracking — just the atmosphere.
     </div>
@@ -1196,6 +1201,7 @@ function frameBody(now){
       gview.lon0 = ((gview.lon0+0.006+180)%360+360)%360-180;
     }
     drawGlobe();
+    drawNight();
     if (reduced) stillFrame(now, stepGlobe, gfield); else stepGlobe();
   } else {
     if (mapDirty) drawMap();
@@ -1795,23 +1801,109 @@ function drawLand(){
   gctx.restore();
 }
 
-/* city lights: on all the time, sized with the globe, and added together so dense regions glow the way
-   they do from orbit. A faint slow shimmer, not a star's twinkle. On a struggling device the wide glows go. */
+/* city lights: the 7,342 cities and towns of Natural Earth's populated places (public domain), loaded from
+   cities.json; the built-in list above shows until it arrives, or if it cannot load. Each light is one
+   pre-drawn glow, stamped and added together so dense regions bloom the way they do from orbit. */
+let cityXYZB = null, cityPhase = null, citySource = "built-in";
+/* The pulse: instead of each light flickering on its own, brightness travels over the globe as a slow
+   two-armed spiral wound around an axis tilted 23.4° (Earth's own tilt). In that tilted frame a light at
+   longitude λ and latitude φ has phase 2λ + 5φ; the spiral turns once every 24 s, and nearby lights
+   always brighten and dim together, so it reads as one calm movement rather than noise. */
+const PULSE_TILT = 23.4 * D2R, PULSE_PERIOD = 24, PULSE_DEPTH = 0.25;
+function pulsePhase(x, y, z){
+  const s = Math.sin(PULSE_TILT), c = Math.cos(PULSE_TILT);
+  const lat = Math.asin(clamp(s * x + c * z, -1, 1));       // axis (s, 0, c)
+  const lon = Math.atan2(y, c * x - s * z);                  // around it, from (c, 0, −s)
+  return 2 * lon + 5 * lat;
+}
+const pulseOf = (phase, tSec) => 1 - PULSE_DEPTH * (0.5 - 0.5 * Math.cos(phase - TAU * tSec / PULSE_PERIOD));
+function pulseAt(lon, lat, tSec){
+  const cl = Math.cos(lat * D2R);
+  return pulseOf(pulsePhase(cl * Math.cos(lon * D2R), cl * Math.sin(lon * D2R), Math.sin(lat * D2R)), tSec);
+}
+function setCities(list, source){
+  const a = new Float32Array(list.length * 4), ph = new Float32Array(list.length);
+  list.forEach((c, i) => {
+    const cl = Math.cos(c[1] * D2R);
+    a[i*4] = cl * Math.cos(c[0] * D2R); a[i*4+1] = cl * Math.sin(c[0] * D2R); a[i*4+2] = Math.sin(c[1] * D2R); a[i*4+3] = c[2];
+    ph[i] = pulsePhase(a[i*4], a[i*4+1], a[i*4+2]);
+  });
+  cityXYZB = a; cityPhase = ph; citySource = source;
+}
+setCities(CITIES, "built-in");
+let citiesLoading = false;
+async function loadCities(){
+  if (citiesLoading || citySource !== "built-in") return;
+  citiesLoading = true;
+  try{
+    const r = await fetchT("cities.json", {}, 20000);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const j = await r.json();
+    const ok = j && Array.isArray(j.places) && j.places.length > 1000 &&
+      j.places.every(c => Array.isArray(c) && Number.isFinite(c[0]) && Number.isFinite(c[1]) && Number.isFinite(c[2]) && Math.abs(c[0]) <= 180 && Math.abs(c[1]) <= 90);
+    if (!ok) throw new Error("bad cities");
+    setCities(j.places, "Natural Earth");
+  }catch{ /* keep the built-in list */ }
+  finally{ citiesLoading = false; }
+}
+/* one warm glow, drawn once: brightest at the centre and fading all the way out, with no hard-edged core */
+const citySprite = document.createElement("canvas");
+citySprite.width = citySprite.height = 64;
+{
+  const x = citySprite.getContext("2d"), g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, "rgba(255,238,208,0.85)"); g.addColorStop(0.1, "rgba(255,226,182,0.62)");
+  g.addColorStop(0.25, "rgba(255,196,128,0.26)"); g.addColorStop(0.5, "rgba(255,176,98,0.07)"); g.addColorStop(1, "rgba(255,165,85,0)");
+  x.fillStyle = g; x.fillRect(0, 0, 64, 64);
+}
+/* Thousands of lights are too many to stamp every frame, so they are painted onto their own layer and that
+   layer is reused until the globe has moved by about half a pixel (the slow idle spin repaints a few times a
+   second; a drag repaints as it goes). Small towns are plain dots, which cost far less than a glow. */
+const lightsC = document.createElement("canvas"), lightsCtx = lightsC.getContext("2d");
+let lightsKey = "";
 function drawCityLights(R){
-  const scale = Math.pow(clamp(R / 280, 0.55, 3.4), 0.6), t = performance.now() / 1000, rich = quality < 2;
+  const pw = Math.round(W * DPR), ph = Math.round(H * DPR);
+  if (lightsC.width !== pw || lightsC.height !== ph){ lightsC.width = pw; lightsC.height = ph; lightsKey = ""; }
+  const step = 0.5 / R;                                // radians that move a light by half a pixel
+  const key = Math.round(gview.lon0 * D2R / step) + "|" + Math.round(gview.lat0 * D2R / step) + "|" + R.toFixed(1)
+    + "|" + GCX + "|" + GCY + "|" + quality + "|" + cityXYZB.length
+    + "|" + (reduced ? "still" : Math.floor(performance.now() / 1000 * 6));   // the slow pulse moves on six times a second
+  if (key !== lightsKey){ lightsKey = key; paintCityLights(R); }
   gctx.save();
+  gctx.setTransform(1, 0, 0, 1, 0, 0);
   gctx.globalCompositeOperation = "lighter";
-  for (let i = 0; i < CITIES.length; i++){
-    const c = CITIES[i], p = gproj(c[0], c[1]);
-    if (p.Z <= 0.02) continue;
-    const shimmer = reduced ? 1 : 0.93 + 0.07 * Math.sin(t * 0.8 + i * 2.3);
-    // bright enough to hold their own under the wind streamlines, which are drawn on top
-    const a = Math.min(1, p.Z * 2.5) * shimmer, b = c[2] * scale * 1.15, q = gscreen(p);
-    if (rich && c[2] >= 2){ gctx.fillStyle = `rgba(255,170,90,${0.05 * a})`; gctx.beginPath(); gctx.arc(q.x, q.y, b * 5.5, 0, TAU); gctx.fill(); }
-    if (rich){ gctx.fillStyle = `rgba(255,190,120,${0.18 * a})`; gctx.beginPath(); gctx.arc(q.x, q.y, b * 2.4, 0, TAU); gctx.fill(); }
-    gctx.fillStyle = `rgba(255,236,200,${a})`; gctx.beginPath(); gctx.arc(q.x, q.y, Math.max(0.8, b * 0.8), 0, TAU); gctx.fill();
-  }
+  gctx.drawImage(lightsC, 0, 0);
   gctx.restore();
+}
+function paintCityLights(R){
+  const c = lightsCtx, scale = Math.pow(clamp(R / 280, 0.55, 3.4), 0.6), rich = quality < 2;
+  const a4 = cityXYZB, n = a4.length / 4, tSec = performance.now() / 1000;
+  const l0 = gview.lat0 * D2R, lo0 = gview.lon0 * D2R, sl0 = Math.sin(l0), cl0 = Math.cos(l0), slo = Math.sin(lo0), clo = Math.cos(lo0);
+  c.setTransform(DPR, 0, 0, DPR, 0, 0);
+  c.globalAlpha = 1;
+  c.globalCompositeOperation = "source-over";
+  c.clearRect(0, 0, W, H);
+  c.globalCompositeOperation = "lighter";
+  c.fillStyle = "rgb(255,226,180)";
+  for (let i = 0; i < n; i++){
+    const x = a4[i*4], y = a4[i*4+1], z = a4[i*4+2], b0 = a4[i*4+3];
+    if (!rich && b0 < 0.5) continue;                    // a struggling device keeps the bigger lights
+    const Z = cl0 * clo * x + cl0 * slo * y + sl0 * z;
+    if (Z <= 0.02) continue;                            // far side of the globe
+    const X = -slo * x + clo * y, Y = -sl0 * clo * x - sl0 * slo * y + cl0 * z;
+    const px = GCX + R * X, py = GCY - R * Y;
+    // small towns stay faint so they read as texture; cities are bright enough to hold up under the wind
+    const a = Math.min(1, Z * 2.5) * (0.45 + 0.55 * Math.min(1, b0)) * (reduced ? 1 : pulseOf(cityPhase[i], tSec));
+    if (b0 < 0.6){
+      const d = Math.max(1.1, b0 * scale * 2.2);
+      c.globalAlpha = a * 0.8;
+      c.fillRect(px - d / 2, py - d / 2, d, d);
+      continue;
+    }
+    const r = Math.max(1.8, b0 * scale * 3.1);
+    c.globalAlpha = a;
+    c.drawImage(citySprite, px - r, py - r, 2 * r, 2 * r);
+    if (rich && b0 >= 1.8){ c.globalAlpha = 0.22 * a; c.drawImage(citySprite, px - r * 2.4, py - r * 2.4, r * 4.8, r * 4.8); }
+  }
 }
 function drawGlobe(){
   const R=globeR(), cx=GCX, cy=GCY;
@@ -1828,7 +1920,7 @@ function drawGlobe(){
   gctx.fillStyle=g; gctx.beginPath(); gctx.arc(cx,cy,R,0,TAU); gctx.fill();
   drawLand();
   drawGlobeLayer();
-  drawCityLights(R);
+  drawCityLights(R);                         // the city dots sit over NASA's night lights (and stand alone without them)
   g=gctx.createRadialGradient(cx,cy,R*0.72,cx,cy,R);
   g.addColorStop(0,"rgba(0,0,0,0)"); g.addColorStop(1,"rgba(2,4,10,.55)");
   gctx.fillStyle=g; gctx.beginPath(); gctx.arc(cx,cy,R,0,TAU); gctx.fill();
@@ -2047,7 +2139,7 @@ function setMode(m){
   if (m==="globe"){
     gview.lon0 = ((view.lon+180)%360+360)%360-180;   // open on the part of the world you were looking at
     gview.lat0 = clamp(view.lat,-70,70);
-    loadLand(); if (!gfield || isStale(gfield)) fetchGlobeField(); initGlobeParticles();
+    loadLand(); loadCities(); loadNight(); if (!gfield || isStale(gfield)) fetchGlobeField(); initGlobeParticles();
   } else {
     view.lon = gview.lon0; view.lat = clamp(gview.lat0,-85,85);   // and back: the map opens where the globe was pointing
     onViewChanged(false); initParticles();
@@ -2252,6 +2344,7 @@ function buildCapture(scale=2){
   if (globe){
     x.fillStyle = "#06090f"; x.fillRect(0,0,W,H);
     x.drawImage(globeC,0,0,W,H);
+    if (nightReady){ x.save(); x.globalCompositeOperation = "screen"; x.drawImage(nightC,0,0,W,H); x.restore(); }
   } else {
     x.drawImage(mapC,0,0,W,H);
     x.drawImage(layerC,0,0,W,H);
@@ -2326,6 +2419,107 @@ addEventListener("error", e=>startupProblem("Aeolus hit a problem starting: "+(e
 addEventListener("unhandledrejection", e=>startupProblem("Aeolus hit a problem starting: "+((e.reason&&e.reason.message)||e.reason||"unknown error")));
 setTimeout(()=>startupProblem("The wind data is taking too long to arrive."), 30000);
 
+/* ---------------- NASA Black Marble night lights ----------------
+   One image of every lit place on Earth (NASA, 2016, from the Suomi NPP satellite), wrapped onto the globe
+   by a small WebGL shader with the same projection as the rest of the globe. It carries the same slow
+   spiral pulse as the dots. Where WebGL or the image is not available, the dots carry on. */
+const nightC = $("#nightgl");
+let nightGL = null, nightProg = null, nightU = {}, nightTex = null, nightReady = false, nightLoading = false;
+const NIGHT_FS = `precision highp float;
+uniform sampler2D tex;
+uniform vec2 center;
+uniform float R, lon0, lat0, t, depth;
+const float PI = 3.14159265;
+void main(){
+  vec2 q = (gl_FragCoord.xy - center) / R;              // y runs up, as in the globe's own maths
+  float rr = dot(q, q);
+  if (rr >= 1.0){ gl_FragColor = vec4(0.0); return; }
+  float Z = sqrt(1.0 - rr);
+  float lat = asin(clamp(Z * sin(lat0) + q.y * cos(lat0), -1.0, 1.0));
+  float lon = lon0 + atan(q.x, Z * cos(lat0) - q.y * sin(lat0));
+  // no fract(): the texture repeats sideways, so there is no seam at the date line
+  float v = texture2D(tex, vec2(lon / (2.0 * PI) + 0.5, 0.5 - lat / PI)).r;
+  float a = pow(clamp((v - 0.01) / 0.85, 0.0, 1.0), 0.6);   // lift faint towns and roads; bright cores reach white
+  vec3 w = vec3(cos(lat) * cos(lon), cos(lat) * sin(lon), sin(lat));
+  float s = sin(0.408407), c = cos(0.408407);              // the pulse axis, tilted 23.4 degrees
+  float plat = asin(clamp(s * w.x + c * w.z, -1.0, 1.0));
+  float plon = atan(w.y, c * w.x - s * w.z);
+  a *= 1.0 - depth * (0.5 - 0.5 * cos(2.0 * plon + 5.0 * plat - 2.0 * PI * t / 24.0));
+  a *= min(1.0, Z * 2.5) * smoothstep(1.0, 0.985, sqrt(rr));   // fade towards the edge, smooth limb
+  vec3 col = mix(vec3(1.0, 0.70, 0.40), vec3(1.0, 0.95, 0.86), smoothstep(0.35, 1.0, v));
+  gl_FragColor = vec4(col * a, a);
+}`;
+function initNight(){
+  try{
+    const gl = nightC.getContext("webgl", { alpha: true, premultipliedAlpha: true, antialias: false, preserveDrawingBuffer: true });
+    if (!gl) return false;
+    const sh = (type, src) => { const o = gl.createShader(type); gl.shaderSource(o, src); gl.compileShader(o);
+      if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
+    const p = gl.createProgram();
+    gl.attachShader(p, sh(gl.VERTEX_SHADER, "attribute vec2 p; void main(){ gl_Position = vec4(p, 0.0, 1.0); }"));
+    gl.attachShader(p, sh(gl.FRAGMENT_SHADER, NIGHT_FS));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    gl.useProgram(p);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(p, "p");
+    gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    for (const k of ["tex","center","R","lon0","lat0","t","depth"]) nightU[k] = gl.getUniformLocation(p, k);
+    nightGL = gl; nightProg = p;
+    return true;
+  }catch(err){ console.warn("night lights unavailable:", err && err.message); nightGL = null; return false; }
+}
+async function loadNight(){
+  if (nightReady || nightLoading) return;
+  nightLoading = true;
+  try{
+    if (!nightGL && !initNight()) return;
+    const r = await fetchT("nightlights.jpg", {}, 30000);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const bmp = await createImageBitmap(await r.blob());
+    const gl = nightGL;
+    if (!gl || gl.isContextLost()) return;
+    nightTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, nightTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gl.LUMINANCE, gl.UNSIGNED_BYTE, bmp);
+    const pot = n => (n & (n - 1)) === 0;
+    if (pot(bmp.width) && pot(bmp.height)){
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    } else {
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    }
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    if (bmp.close) bmp.close();
+    nightReady = true;
+    nightC.classList.add("ready");
+  }catch(err){ /* the dots stay */ }
+  finally{ nightLoading = false; }
+}
+function drawNight(){
+  if (!nightReady || !nightGL) return;
+  const gl = nightGL, pw = Math.round(W * DPR), ph = Math.round(H * DPR);
+  if (nightC.width !== pw || nightC.height !== ph){ nightC.width = pw; nightC.height = ph; }
+  gl.viewport(0, 0, pw, ph);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.uniform1i(nightU.tex, 0);
+  gl.uniform2f(nightU.center, GCX * DPR, (H - GCY) * DPR);
+  gl.uniform1f(nightU.R, globeR() * DPR);
+  gl.uniform1f(nightU.lon0, gview.lon0 * D2R);
+  gl.uniform1f(nightU.lat0, gview.lat0 * D2R);
+  gl.uniform1f(nightU.t, (performance.now() / 1000) % 2400);
+  gl.uniform1f(nightU.depth, reduced ? 0 : PULSE_DEPTH);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+nightC.addEventListener("webglcontextlost", e => { e.preventDefault(); nightReady = false; nightGL = null; nightC.classList.remove("ready"); });
+nightC.addEventListener("webglcontextrestored", () => { if (mode === "globe") loadNight(); });
+
 /* ---------------- phone-first chrome ----------------
    One set of controls, two arrangements. On a phone the time bar, layers and modes live in a
    dock at the bottom; on a wide screen they go back where the markup has them. */
@@ -2392,7 +2586,8 @@ window.aeolus = {
   get show(){ return {...show}; }, get globe(){ return { cx:GCX, cy:GCY, r:globeR(), lon:gview.lon0, lat:gview.lat0 }; },
   get view(){ return {...view}; }, get size(){ return { W, H }; },
   parseLink, formatLink, get link(){ return formatLink(viewState()); },
-  get cities(){ return CITIES.length; },
+  get cities(){ return cityXYZB.length / 4; }, get citySource(){ return citySource; }, get nightSource(){ return nightReady ? "Black Marble" : "dots"; },
+  pulseAt, PULSE_DEPTH,
   get pointers(){ return pointers.size; }, get cinema(){ return cinema; }, get time(){ return displayTime; },
   get range(){ const f = activeField(); return f ? { t0:f.t0*1000, t1:f.t1*1000 } : null; },
   get lats(){ const a = mode==="globe" ? gparts : parts; let lo = 90, hi = -90; for (const p of a){ if (p.lat<lo) lo=p.lat; if (p.lat>hi) hi=p.lat; } return { lo, hi }; },

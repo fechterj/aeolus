@@ -36,7 +36,7 @@ A live picture of the wind, temperature and rain across the world, drawn on a ni
 
 ## Running it yourself
 
-There is no build step and no dependencies. The whole app is `index.html`, plus `land.geo.json` for the coastlines and `og.jpg` for link previews.
+There is no build step and no dependencies. The whole app is `index.html`, plus `land.geo.json` for the coastlines, `nightlights.jpg` for the night lights, `cities.json` for the city dots and `og.jpg` for link previews.
 
 It needs to be served over HTTP, because the page loads `land.geo.json` by relative URL:
 
@@ -64,6 +64,8 @@ Aeolus has no server and no account. Your browser talks directly to these servic
 | [Esri](https://www.esri.com/) dark gray canvas | Basemap tiles on the flat map |
 | [BigDataCloud](https://www.bigdatacloud.com/) | Turning a clicked point into a place name |
 | [Natural Earth](https://www.naturalearthdata.com/) | Country outlines on the globe (public domain, shipped in this repo) |
+| [NASA Earth Observatory](https://science.nasa.gov/earth/earth-observatory/earth-at-night/) Black Marble 2016 | The night lights on the globe: every lit place on Earth, from the Suomi NPP satellite (public domain, shipped in this repo as `nightlights.jpg`, 4096 × 2048 grayscale) |
+| [Natural Earth](https://www.naturalearthdata.com/) populated places | 7,342 city and town dots drawn over the night lights, and on their own where WebGL or the image is not available (public domain, shipped as `cities.json`) |
 
 Each of those services sees the request your browser makes to it, including your IP address and the area you are looking at. Aeolus itself collects nothing.
 

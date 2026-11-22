@@ -173,7 +173,8 @@ const serveFor = (win, realFetch) => (input, opts) => {
     const kind = u.searchParams.get("current") ? "point" : ((u.searchParams.get("latitude") || "").includes(",") ? "grid" : "point");
     netLog.push({ win, kind, url });
     const fault = faults.get(win);
-    if (fault && kind === "grid"){
+    const serviceFault = fault === "broken" || (fault && LIMIT_REASON[fault] !== undefined);   // not nocities/nonight
+    if (serviceFault && kind === "grid"){
       if (fault === "broken") return reply([{ latitude: 0, longitude: 0, hourly: { time: [1] } }]);   // a short, half-empty answer
       return new Promise(res => setTimeout(() => res(new win.Response(JSON.stringify({ error: true, reason: LIMIT_REASON[fault] }),
         { status: 429, headers: { "Content-Type": "application/json" } })), 15));
@@ -183,6 +184,10 @@ const serveFor = (win, realFetch) => (input, opts) => {
   if (u.hostname === "api.bigdatacloud.net"){
     netLog.push({ win, kind: "place", url });
     return reply({ city: "Test point", principalSubdivision: "", countryName: "Testland" });
+  }
+  if ((faults.get(win) === "nocities" && /cities\.json/.test(u.pathname)) || (faults.get(win) === "nonight" && /nightlights\.jpg/.test(u.pathname))){
+    netLog.push({ win, kind: "real", url });
+    return Promise.resolve(new win.Response("missing", { status: 404 }));
   }
   netLog.push({ win, kind: "real", url });
   return realFetch(input, opts);
@@ -229,7 +234,18 @@ async function unitTests(p){
   ok(a.fieldUsable({ field: f, saved: now - 2e6 }, 1e6) === false, "cache: an old forecast is refused");
   ok(a.fieldUsable({ field: { hours: [1, 2, 3], t1: now / 1000 - 10 }, saved: now }, 1e6) === false, "cache: a forecast that ended is refused");
   ok(a.fieldUsable(null, 1e6) === false && a.fieldUsable({ saved: now }, 1e6) === false, "cache: junk is refused");
-  ok(a.cities >= 500, "enough cities for the lights to read as a map", a.cities + " cities");
+  await until(() => a.citySource === "Natural Earth", 6000);
+  ok(a.cities >= 7000 && a.citySource === "Natural Earth", "the full list of cities and towns loads", a.cities + " from " + a.citySource);
+  // the light pulse: a smooth pattern over the sphere, never flicker
+  let lo = 9, hi = -9, worstNear = 0;
+  for (let k = 0; k < 400; k++){
+    const lon = -180 + (k * 137.5) % 360, lat = -80 + (k * 61.8) % 160, ts = k * 0.37;
+    const v = a.pulseAt(lon, lat, ts), w = a.pulseAt(lon + 0.3, lat + 0.2, ts);
+    lo = Math.min(lo, v); hi = Math.max(hi, v); worstNear = Math.max(worstNear, Math.abs(v - w));
+  }
+  ok(lo >= 1 - a.PULSE_DEPTH - 1e-6 && hi <= 1 + 1e-6, "the light pulse stays between " + (1 - a.PULSE_DEPTH) + " and full brightness", lo.toFixed(3) + "…" + hi.toFixed(3));
+  ok(worstNear < 0.03, "neighbouring lights pulse together (a pattern, not noise)", "largest difference " + worstNear.toFixed(3));
+  ok(Math.abs(a.pulseAt(20, 10, 0) - a.pulseAt(20, 10, 24)) < 1e-6 && Math.abs(a.pulseAt(20, 10, 0) - a.pulseAt(20, 10, 12)) > 0.01, "the pulse turns once every 24 seconds");
   ok(/^rgba\(\d+,\d+,\d+,0\.6\)$/.test(a.speedColor(12)) && a.speedColor(-5) === a.speedColor(0) && a.speedColor(999) === a.speedColor(40),
      "wind colour scale clamps at both ends");
 }
@@ -482,6 +498,33 @@ async function faultTests(){
   const retry = p.$("#toast button");
   if (retry){ retry.click(); await until(() => a.ready, 6000); }
   ok(!!retry && a.ready, "Retry fetches again once the service answers", retry ? "still not ready" : "no Retry button");
+
+  // the city file missing: the built-in lights stay
+  const nc = await open(375, 812, "", "nocities"), na = nc.win.aeolus;
+  await sleep(2500);
+  ok(na.citySource === "built-in" && na.cities >= 500 && !/problem starting/.test(nc.$("#toast").textContent), "if the city file cannot load, the built-in lights stay",
+     na.cities + " from " + na.citySource);
+
+  // NASA's night lights: drawn when the image loads; the dots take over when it cannot
+  const nl = await open(375, 812), nla = nl.win.aeolus;
+  const gotNight = await until(() => nla.nightSource === "Black Marble", 8000);
+  if (!gotNight) skip("NASA night lights show on the globe", "WebGL or the image is not available in this browser");
+  else {
+    await sleep(400);
+    const cv = nl.$("#nightgl"), probe = document.createElement("canvas"); probe.width = cv.width; probe.height = cv.height;
+    const pc = probe.getContext("2d"); pc.drawImage(cv, 0, 0);
+    const g = nla.globe, d = pc.getImageData(0, 0, probe.width, probe.height).data, k = cv.width / nla.size.W;
+    let disc = 0, lit = 0, outside = 0;
+    for (let y = 0; y < probe.height; y += 2) for (let x = 0; x < probe.width; x += 2){
+      const inside = Math.hypot(x / k - g.cx, y / k - g.cy) < g.r - 1, A = d[(y * probe.width + x) * 4 + 3];
+      if (inside){ disc++; if (A > 40) lit++; } else if (A > 8) outside++;
+    }
+    ok(lit / disc > 0.005 && outside === 0, "NASA night lights show on the globe and nowhere off it", (lit / disc * 100).toFixed(2) + "% of the disc lit, " + outside + " stray pixels");
+  }
+  const nn = await open(375, 812, "", "nonight"), nna = nn.win.aeolus;
+  await sleep(2500);
+  ok(nna.nightSource === "dots" && !nn.$("#nightgl").classList.contains("ready") && !/problem starting/.test(nn.$("#toast").textContent),
+     "if the night-lights image cannot load, the dots stay", nna.nightSource);
   await forgetForecasts();
 }
 
