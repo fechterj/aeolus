@@ -133,7 +133,8 @@
   .prow .k{font-size:10px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase}
   .prow .v{font-size:15px;margin-top:2px;font-variant-numeric:tabular-nums}
   .prow.wide{grid-column:1/-1}
-  #spark{width:100%;height:56px;margin-top:14px;display:block}
+  /* position/inset undo the full-screen rule every other canvas wants: this one lives inside the panel */
+  #spark{position:static;inset:auto;width:100%;height:56px;margin-top:14px;display:block}
   #sparklabel{font-size:10px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase;margin-top:6px}
   #pnote{font-size:10.5px;color:var(--dim);margin-top:12px;line-height:1.5}
 
@@ -219,6 +220,7 @@
   button,input{touch-action:manipulation}
   header,#dock,#legend,#zoomctl{-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
   #search{-webkit-user-select:text;user-select:text}
+  canvas{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}   /* no copy/save bubble on a long press */
   #dock{display:none}
   #help .card{max-height:86vh;max-height:86dvh;overflow:auto}
   #gallery .card{max-height:86dvh}
@@ -288,6 +290,7 @@
     width:auto;bottom:calc(var(--dock-h,170px) + 6px);
     max-height:calc(100vh - var(--dock-h,170px) - var(--top-h,60px) - 20px);
     max-height:calc(100dvh - var(--dock-h,170px) - var(--top-h,60px) - 20px);overflow:auto;padding:16px}
+  body.mobile #panel{background:rgba(10,15,22,.97)}      /* it covers the legend and globe: keep them from showing through */
   body.mobile #panel .close{width:44px;height:44px;top:0;right:0}
   body.mobile #pspeed{font-size:36px}
   body.mobile #toast{top:calc(var(--top-h,60px) + 10px);max-width:calc(100vw - 24px);width:max-content}
@@ -299,6 +302,21 @@
   body.mobile #lbcap{bottom:calc(72px + env(safe-area-inset-bottom,0px))}
   body.mobile #lbimg{max-height:66vh;max-height:66dvh}
   body.mobile #help li{font-size:14px}
+  /* blurring what is behind every panel is costly over a moving canvas on a phone: use solid panels */
+  body.mobile{--panel:rgba(10,15,22,.92)}
+  body.mobile .glass,body.mobile #search{-webkit-backdrop-filter:none;backdrop-filter:none}
+  body.mobile #help,body.mobile #gallery{-webkit-backdrop-filter:none;backdrop-filter:none;background:rgba(3,5,9,.9)}
+  /* search results span the screen instead of hanging under a narrow field */
+  body.mobile #results{position:fixed;left:max(10px,env(safe-area-inset-left,0px));right:max(10px,env(safe-area-inset-right,0px));
+    top:calc(var(--top-h,60px) + 6px);max-height:50vh;max-height:50dvh;overflow:auto}
+  body.mobile #results button{padding:12px 14px;font-size:15px;min-height:48px}
+  body.mobile #results .sub{font-size:12px}
+  /* nothing a person has to read is under 11 px */
+  body.mobile .prow .k{font-size:11px}
+  body.mobile #pcoords{font-size:12px}
+  body.mobile #pnote,body.mobile #sparklabel{font-size:11.5px}
+  body.mobile #galgrid .meta{font-size:12px}
+  body.mobile #legend .title,body.mobile #legend .labels{font-size:10.5px}
 </style>
 </head>
 <body>
@@ -1214,7 +1232,14 @@ function endPointer(e){
     if (wasDrag && wasDrag.moved < 6 && performance.now()-wasDrag.t < 600 && !cinemaExitClick){
       const w = mode==="globe" ? gunproject(e.clientX, e.clientY) : toWorld(e.clientX, e.clientY);
       clearTimeout(clickTimer);
-      if (w) clickTimer = setTimeout(()=>openPanel(w.lon, w.lat), 300);  // wait: might be a double-click
+      const tNow = performance.now();
+      if (e.pointerType === "touch" && tNow-lastTap.t < 320 && Math.hypot(e.clientX-lastTap.x, e.clientY-lastTap.y) < 32){
+        lastTap.t = 0; lastDoubleTap = tNow;       // second tap in the same spot: zoom in, like a double-click
+        zoomAt(e.clientX, e.clientY, 1);
+      } else {
+        lastTap = { t:tNow, x:e.clientX, y:e.clientY };
+        if (w) clickTimer = setTimeout(()=>openPanel(w.lon, w.lat), 300);  // wait: might be a double-click or double-tap
+      }
     }
     cinemaExitClick = false;
     dragInfo = null;
@@ -1223,10 +1248,12 @@ function endPointer(e){
   pinchDist = 0;
 }
 let clickTimer = null, cinemaExitClick = false;
+let lastTap = { t:0, x:0, y:0 }, lastDoubleTap = 0;
 mapC.addEventListener("pointerup", endPointer);
 mapC.addEventListener("pointercancel", endPointer);
 mapC.addEventListener("dblclick", e=>{
   e.preventDefault();
+  if (performance.now()-lastDoubleTap < 600) return;   // already handled as a double-tap
   clearTimeout(clickTimer);
   zoomAt(e.clientX, e.clientY, 1);
   scheduleField();
@@ -1259,6 +1286,7 @@ let gestureScale = 1;
 mapC.addEventListener("gesturestart", e=>{ e.preventDefault(); gestureScale = 1; });
 mapC.addEventListener("gesturechange", e=>{
   e.preventDefault();
+  if (pointers.size) return;                  // fingers on the screen: the pointer pinch already handles it
   zoomAt(e.clientX||W/2, e.clientY||H/2, Math.log2(e.scale/gestureScale));
   gestureScale = e.scale;
   scheduleField();
@@ -1308,6 +1336,7 @@ function buildLegend(){
     "linear-gradient(90deg,rgba(70,120,210,.15),#3c96eb,#5fc3ff,#afe6ff,#f0faff)",
     ["0","0.5","2","5","10+"]);
   $("#legend").innerHTML = html || '<div class="title">no layers active</div>';
+  measureChrome();                            // the legend strip changes height with the layers: re-fit the globe now
 }
 document.querySelectorAll("#layers button").forEach(b=>{
   b.addEventListener("click", ()=>{
@@ -1451,6 +1480,7 @@ searchEl.addEventListener("input", ()=>{
           gview.lon0 = place.longitude; gview.lat0 = clamp(place.latitude,-85,85);
           resultsEl.classList.remove("open"); searchEl.value = place.name; searchEl.blur();
           onViewChanged(true); initParticles(); scheduleField(50);
+          openPanel(place.longitude, place.latitude);   // and show its weather, so the search ends somewhere
         });
         resultsEl.appendChild(b);
       }
@@ -2013,7 +2043,12 @@ $("#lbdown").addEventListener("click", ()=>{
   if (!lbRec) return;
   const a=document.createElement("a");
   a.download=`aeolus-${new Date(lbRec.when).toISOString().slice(0,10)}-${lbRec.lat.toFixed(1)}_${lbRec.lon.toFixed(1)}.jpg`;
-  a.href=lbURL; a.click();
+  a.href=lbURL;
+  if (isMobile && navigator.canShare && navigator.share){
+    const f=new File([lbRec.blob], a.download, {type:"image/jpeg"});
+    if (navigator.canShare({files:[f]})){ navigator.share({files:[f], title:"Aeolus"}).catch(()=>{}); return; }
+  }
+  a.click();
 });
 $("#lbdel").addEventListener("click", async ()=>{
   if (!lbRec) return;

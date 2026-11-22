@@ -131,6 +131,11 @@ async function sizeTests(label, w, h, wantMobile){
     const floor = h >= w && shown(p.$("#legend")) ? rect(p.$("#legend")).t : bottom;
     ok(g.cy + g.r <= floor + 2, "globe stays clear of the legend", "disc bottom " + Math.round(g.cy + g.r) + ", legend top " + Math.round(floor));
     ok(g.r * 2 >= Math.min(w, floor - top) * 0.8, "globe uses most of the free space", "diameter " + Math.round(g.r * 2));
+    const blur = ["#timebar", "#brand", "#legend"].map(sel => getComputedStyle(p.$(sel)).backdropFilter || getComputedStyle(p.$(sel)).webkitBackdropFilter || "none");
+    ok(blur.every(b => b === "none"), "panels are solid on a phone (no live blur over the animation)", blur.join(" / "));
+    const tiny = p.$$("#legend .title,#legend .labels,#attr,#timelabel,.tbtn,#chips button").filter(shown)
+      .map(e => [e, parseFloat(getComputedStyle(e).fontSize)]).filter(x => x[1] < 9.5);
+    ok(tiny.length === 0, "no control text is smaller than 9.5 px", tiny.map(x => (x[0].id || x[0].className) + " " + x[1]).join(", "));
     const chips = p.$("#chips");
     ok(chips.scrollWidth > chips.clientWidth ? getComputedStyle(chips).overflowX === "auto" : true, "layer and mode row scrolls sideways when it does not fit");
     const gb = rect(p.$("#globebtn"));
@@ -149,15 +154,34 @@ async function sizeTests(label, w, h, wantMobile){
   touch(p, "pointermove", g0.cx - 60, g0.cy, 1); touch(p, "pointermove", g0.cx + 60, g0.cy, 2);
   touch(p, "pointerup", g0.cx - 60, g0.cy, 1); touch(p, "pointerup", g0.cx + 60, g0.cy, 2);
   ok(a.globe.r > r0 * 1.2, "pinching zooms the globe", "radius ×" + (a.globe.r / r0).toFixed(2));
-  key(p.win, "-"); key(p.win, "-");
+  // an iPhone sends a gesture event on top of the pointer events for the same pinch
+  const rG = a.globe.r;
+  touch(p, "pointerdown", g0.cx, g0.cy, 5);
+  const ge = new p.win.Event("gesturechange", { bubbles: true, cancelable: true }); ge.scale = 2; ge.clientX = g0.cx; ge.clientY = g0.cy;
+  p.$("#map").dispatchEvent(ge);
+  touch(p, "pointerup", g0.cx, g0.cy, 5);
+  ok(Math.abs(a.globe.r - rG) < 0.5, "a pinch is not counted twice on iPhones", "radius ×" + (a.globe.r / rG).toFixed(2));
+  await sleep(450); p.$("#panel .close").click();
+  // double-tap
+  const rD = a.globe.r, gd = a.globe;
+  touch(p, "pointerdown", gd.cx, gd.cy); touch(p, "pointerup", gd.cx, gd.cy);
+  touch(p, "pointerdown", gd.cx + 3, gd.cy + 2); touch(p, "pointerup", gd.cx + 3, gd.cy + 2);
+  await sleep(450);
+  ok(a.globe.r > rD * 1.5, "double-tap zooms in", "radius ×" + (a.globe.r / rD).toFixed(2));
+  ok(!p.$("#panel").classList.contains("open"), "double-tap does not also open the weather panel");
+  key(p.win, "-"); key(p.win, "-"); key(p.win, "-"); key(p.win, "-");
   const g1 = a.globe;
   touch(p, "pointerdown", g1.cx, g1.cy); touch(p, "pointerup", g1.cx, g1.cy);
   const opened = await until(() => p.$("#panel").classList.contains("open"), 1500);
   ok(opened, "tapping the globe opens the weather for that point");
   if (opened){
     await sleep(300);
-    const pr = rect(p.$("#panel"));
+    // layout box, not the painted box: the panel slides in with a transform
+    const pe = p.$("#panel"), pr = { l: pe.offsetLeft, t: pe.offsetTop, r: pe.offsetLeft + pe.offsetWidth, b: pe.offsetTop + pe.offsetHeight };
     ok(pr.l >= 0 && pr.r <= w + 1 && pr.t >= 0 && pr.b <= h + 1, "weather panel fits on screen", [pr.l, pr.t, pr.r, pr.b].map(Math.round).join(","));
+    const sp = p.$("#spark");
+    ok(pe.contains(sp) && getComputedStyle(sp).position === "static" && sp.offsetTop > 40 && sp.offsetTop + sp.offsetHeight <= pe.scrollHeight + 1,
+       "24-hour wind chart is drawn inside the weather panel", "position " + getComputedStyle(sp).position + ", top " + sp.offsetTop);
     p.$("#panel .close").click();
     ok(!p.$("#panel").classList.contains("open"), "weather panel closes");
   }
