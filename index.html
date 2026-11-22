@@ -20,7 +20,8 @@
   canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
   #fx,#layer,#bloom,#globe,#gfx{pointer-events:none}
   #globe,#gfx{display:none}
-  body.globe #map,body.globe #layer,body.globe #fx{display:none}
+  body.globe #layer,body.globe #fx{display:none}
+  body.globe #map{opacity:0}   /* stays in the tree: it is the input surface for both modes */
   body.globe #globe,body.globe #gfx{display:block}
   body.globe #layers button[data-l="temp"],body.globe #layers button[data-l="rain"]{opacity:.35;pointer-events:none}
   #bloom{filter:blur(11px) saturate(1.35) brightness(1.15);mix-blend-mode:screen;opacity:.55}
@@ -796,7 +797,9 @@ function stepParticles(){
 
 /* ---------------- time ---------------- */
 const slider = $("#slider"), timelabel = $("#timelabel"), playBtn = $("#play");
+function activeField(){ return mode==="globe" ? gfield : field; }
 function syncTimeUI(){
+  const field = activeField();
   if (!field) return;
   layerDirty = true;
   const h = (displayTime/1000-field.t0)/3600;
@@ -814,12 +817,14 @@ function setPlaying(v){
 }
 playBtn.addEventListener("click", ()=>setPlaying(!playing));
 $("#nowbtn").addEventListener("click", ()=>{
-  displayTime = field ? clamp(Date.now(), field.t0*1000, field.t1*1000) : Date.now();
+  const f = activeField();
+  displayTime = f ? clamp(Date.now(), f.t0*1000, f.t1*1000) : Date.now();
   syncTimeUI();
 });
 slider.addEventListener("input", ()=>{
-  if (!field) return;
-  displayTime = (field.t0 + (+slider.value)*3600)*1000;
+  const f = activeField();
+  if (!f) return;
+  displayTime = (f.t0 + (+slider.value)*3600)*1000;
   syncTimeUI();
 });
 addEventListener("keydown", e=>{
@@ -830,13 +835,22 @@ addEventListener("keydown", e=>{
   if (e.key === "-" || e.key === "_") zoomBy(-0.8);
   if (e.key === "s" || e.key === "S") setSilk(!silk);
   if (e.key === "c" || e.key === "C") setCinema(!cinema);
-  if (e.key === "Escape"){ closePanel(); $("#help").classList.remove("open"); }
+  if (e.key === "g" || e.key === "G") setMode(mode==="globe"?"flat":"globe");
+  if (e.key === "Escape"){
+    if ($("#lightbox").classList.contains("open")) closeLightbox();
+    else if ($("#gallery").classList.contains("open")) $("#gallery").classList.remove("open");
+    else { closePanel(); $("#help").classList.remove("open"); }
+  }
 });
 
 /* ---------------- main loop ---------------- */
 let lastT = performance.now();
 function frame(now){
   const dt = Math.min((now-lastT)/1000, 0.1); lastT = now;
+  if (!mapC.width || !mapC.height){            // window not laid out yet: wait, don't die
+    if (innerWidth && innerHeight){ sizeCanvases(); initParticles(); initRain(); }
+    requestAnimationFrame(frame); return;
+  }
   const af = mode==="globe" ? gfield : field;
   if (playing && af){
     displayTime += dt*3600*1000*0.85;          // ~0.85 forecast-hours per second
@@ -844,7 +858,9 @@ function frame(now){
     syncTimeUI();
   }
   if (mode==="globe"){
-    if (pointers.size===0) gview.lon0 += 0.006;   // slow idle rotation
+    if (pointers.size===0 && !silk){              // slow idle rotation (held still for long exposures)
+      gview.lon0 = ((gview.lon0+0.006+180)%360+360)%360-180;
+    }
     drawGlobe();
     stepGlobe();
   } else {
@@ -876,7 +892,8 @@ mapC.addEventListener("pointerdown", e=>{
   mapC.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
   if (pointers.size === 1){
-    dragInfo = { x:e.clientX, y:e.clientY, lon:view.lon, lat:view.lat, moved:0, t:performance.now() };
+    dragInfo = { x:e.clientX, y:e.clientY, lon:view.lon, lat:view.lat,
+                 glon:gview.lon0, glat:gview.lat0, moved:0, t:performance.now() };
   } else if (pointers.size === 2){
     const [a,b] = [...pointers.values()];
     pinchDist = Math.hypot(a.x-b.x,a.y-b.y);
@@ -890,6 +907,13 @@ mapC.addEventListener("pointermove", e=>{
   if (pointers.size === 1 && dragInfo){
     const dx = e.clientX-dragInfo.x, dy = e.clientY-dragInfo.y;
     dragInfo.moved = Math.max(dragInfo.moved, Math.hypot(dx,dy));
+    if (mode === "globe"){                       // drag turns the sphere
+      const k = 180/(Math.PI*globeR());
+      gview.lon0 = ((dragInfo.glon - dx*k + 180)%360+360)%360-180;
+      gview.lat0 = clamp(dragInfo.glat + dy*k, -85, 85);
+      if (dragInfo.moved > 2) clearTrails();
+      return;
+    }
     const c = { x: lonToX(dragInfo.lon)-dx, y: latToY(dragInfo.lat)-dy };
     view.lon = xToLon(c.x);
     view.lat = clamp(yToLat(c.y),-85,85);
@@ -908,9 +932,9 @@ function endPointer(e){
   pointers.delete(e.pointerId);
   if (pointers.size === 0){
     if (wasDrag && wasDrag.moved < 6 && performance.now()-wasDrag.t < 600 && !cinemaExitClick){
-      const w = toWorld(e.clientX, e.clientY);
+      const w = mode==="globe" ? gunproject(e.clientX, e.clientY) : toWorld(e.clientX, e.clientY);
       clearTimeout(clickTimer);
-      clickTimer = setTimeout(()=>openPanel(w.lon, w.lat), 300);  // wait: might be a double-click
+      if (w) clickTimer = setTimeout(()=>openPanel(w.lon, w.lat), 300);  // wait: might be a double-click
     }
     cinemaExitClick = false;
     dragInfo = null;
@@ -929,6 +953,11 @@ mapC.addEventListener("dblclick", e=>{
 });
 
 function zoomAt(px,py,dz){
+  if (mode === "globe"){
+    gview.zoom = clamp(gview.zoom*Math.pow(2,dz), GZMIN, GZMAX);
+    clearTrails();
+    return;
+  }
   const before = toWorld(px,py);
   view.zoom = clamp(view.zoom+dz, ZMIN, ZMAX);
   const c = centerWorld();
@@ -1122,6 +1151,7 @@ searchEl.addEventListener("input", ()=>{
         b.innerHTML = `<div>${flag} ${place.name}</div><div class="sub">${[place.admin1,place.country].filter(Boolean).join(" · ")}</div>`;
         b.addEventListener("click", ()=>{
           view.lon = place.longitude; view.lat = place.latitude; view.zoom = 6;
+          gview.lon0 = place.longitude; gview.lat0 = clamp(place.latitude,-85,85);
           resultsEl.classList.remove("open"); searchEl.value = place.name; searchEl.blur();
           onViewChanged(true); initParticles(); scheduleField(50);
         });
@@ -1144,6 +1174,7 @@ $("#locate").addEventListener("click", ()=>{
   if (!navigator.geolocation) return showToast("Geolocation isn't available here.");
   navigator.geolocation.getCurrentPosition(pos=>{
     view.lon = pos.coords.longitude; view.lat = pos.coords.latitude; view.zoom = 6;
+    gview.lon0 = view.lon; gview.lat0 = clamp(view.lat,-85,85);
     onViewChanged(true); initParticles(); scheduleField(50);
   }, ()=>showToast("Couldn't get your location."));
 });
@@ -1179,6 +1210,7 @@ let mode = "flat";
 const globeC = $("#globe"), gfxC = $("#gfx");
 const gctx = globeC.getContext("2d"), gfx = gfxC.getContext("2d");
 const gview = { lon0:-30, lat0:22, zoom:1 };
+const GZMIN = 0.6, GZMAX = 3.2;
 let gfield = null, gAbort = null, gSeq = 0;
 let gparts = [], landFeats = null, starC = null;
 const globeR = () => Math.min(W,H)*0.38*gview.zoom;
@@ -1287,10 +1319,17 @@ function drawLand(){
   gctx.lineWidth = 0.7;
   const l0=gview.lat0*D2R, lo0=gview.lon0*D2R;
   const vx=Math.cos(l0)*Math.cos(lo0), vy=Math.cos(l0)*Math.sin(lo0), vz=Math.sin(l0);
+  /* where a coastline dips behind the horizon, follow the limb (not a chord) to where it returns */
+  const limbArc = (a1,a2) => {
+    let da = a2-a1;
+    while (da > Math.PI) da -= TAU;
+    while (da <= -Math.PI) da += TAU;
+    gctx.arc(cx,cy,R,a1,a2,da<0);
+  };
   for (const feat of landFeats){
     gctx.beginPath();
     for (const ring of feat){
-      let open=false, prev=null, prevD=0;
+      let started=false, pendExit=null, firstEnter=null, prev=null, prevD=0;
       const n=ring.length;
       for (let i=0;i<=n;i++){
         const p=ring[i%n];
@@ -1300,15 +1339,22 @@ function drawLand(){
           let qx=prev[0]+(p[0]-prev[0])*t, qy=prev[1]+(p[1]-prev[1])*t, qz=prev[2]+(p[2]-prev[2])*t;
           const nn=Math.hypot(qx,qy,qz); qx/=nn; qy/=nn; qz/=nn;
           const s=gscreen(gprojXYZ(qx,qy,qz));
-          if (d>0){ if(open) gctx.lineTo(s.x,s.y); else { gctx.moveTo(s.x,s.y); open=true; } }
-          else { if(open) gctx.lineTo(s.x,s.y); open=false; }
+          const ang=Math.atan2(s.y-cy,s.x-cx);
+          if (d>0){                                  // coming back into view
+            if (!started){ gctx.moveTo(s.x,s.y); started=true; firstEnter=ang; }
+            else if (pendExit!==null) limbArc(pendExit,ang);
+            else gctx.lineTo(s.x,s.y);
+            pendExit=null;
+          } else if (started){ gctx.lineTo(s.x,s.y); pendExit=ang; }
         }
         if (d>0){
           const s=gscreen(gprojXYZ(p[0],p[1],p[2]));
-          if(!open){ gctx.moveTo(s.x,s.y); open=true; } else gctx.lineTo(s.x,s.y);
-        } else open=false;
+          if(!started){ gctx.moveTo(s.x,s.y); started=true; } else gctx.lineTo(s.x,s.y);
+        }
         prev=p; prevD=d;
       }
+      if (pendExit!==null && firstEnter!==null) limbArc(pendExit,firstEnter);
+      if (started) gctx.closePath();
     }
     gctx.fill("evenodd");
     gctx.stroke();
@@ -1355,12 +1401,13 @@ function drawGlobe(){
   }
 }
 
-/* global wind grid for the sphere: 32x16, one fetch */
+/* global wind grid for the sphere: 24x12, one fetch. Open-Meteo counts every point as a call
+   (600/min free): the flat grid (216) plus this one (288) must fit inside the same minute. */
 async function fetchGlobeField(){
   const seq=++gSeq;
   if (gAbort) gAbort.abort();
   gAbort = new AbortController();
-  const cols=32, rows=16, lats=[], lons=[];
+  const cols=24, rows=12, lats=[], lons=[];
   for (let r=0;r<rows;r++){
     const la=84-168*r/(rows-1);
     for (let c=0;c<cols;c++){ lats.push(la.toFixed(2)); lons.push((-180+360*c/cols).toFixed(2)); }
@@ -1441,7 +1488,7 @@ function stepGlobe(){
   gfx.globalCompositeOperation=silk?"source-over":"lighter";
   gfx.lineWidth=silk?1.5:1.2;
   gfx.lineCap="round";
-  const mpp=111194/globeR(), dt=(silk?0.35:0.5)*mpp;
+  const mpp=6371000/globeR(), dt=(silk?0.35:0.5)*mpp;   // metres per pixel at the sub-observer point
   for (const p of gparts){
     const w=sampleG(p.lon,p.lat,displayTime);
     const a=gscreen(gproj(p.lon,p.lat));
@@ -1464,8 +1511,13 @@ function setMode(m){
   document.body.classList.toggle("globe", m==="globe");
   $("#globebtn").classList.toggle("on", m==="globe");
   clearTrails();
-  if (m==="globe"){ loadLand(); if(!gfield) fetchGlobeField(); initGlobeParticles(); }
+  if (m==="globe"){
+    gview.lon0 = ((view.lon+180)%360+360)%360-180;   // open on the part of the world you were looking at
+    gview.lat0 = clamp(view.lat,-70,70);
+    loadLand(); if(!gfield) fetchGlobeField(); initGlobeParticles();
+  }
   else scheduleField(100);
+  syncTimeUI();
   buildLegend();
 }
 $("#globebtn").addEventListener("click", ()=>setMode(mode==="globe"?"flat":"globe"));
@@ -1594,6 +1646,7 @@ function setSilk(on){
   silk = on;
   $("#silkbtn").classList.toggle("on", on);
   for (const p of parts) p.max = on ? 500+Math.random()*700 : 60+Math.random()*160;
+  for (const p of gparts) p.max = on ? 500+Math.random()*700 : 70+Math.random()*160;
   clearTrails();
 }
 function setCinema(on){
@@ -1603,6 +1656,7 @@ function setCinema(on){
   $("#cinebtn").classList.toggle("on", on);
   if (on){
     preCinema = { silk, playing };
+    autoBucket = null; autoCount = 0;           // each cinema run may keep up to 24 frames
     closePanel();
     resultsEl.classList.remove("open");
     setSilk(true);
@@ -1617,21 +1671,27 @@ $("#silkbtn").addEventListener("click", ()=>setSilk(!silk));
 $("#cinebtn").addEventListener("click", ()=>setCinema(!cinema));
 
 /* capture: composite the living canvas into a keepable poster */
-function buildCapture(){
-  const scale = 2;
+function buildCapture(scale=2){
   const c = document.createElement("canvas");
   c.width = W*scale; c.height = H*scale;
   const x = c.getContext("2d");
   x.scale(scale,scale);
-  x.drawImage(mapC,0,0,W,H);
-  x.drawImage(layerC,0,0,W,H);
+  const globe = mode==="globe";
+  const trails = globe ? gfxC : fxC;
+  if (globe){
+    x.fillStyle = "#06090f"; x.fillRect(0,0,W,H);
+    x.drawImage(globeC,0,0,W,H);
+  } else {
+    x.drawImage(mapC,0,0,W,H);
+    x.drawImage(layerC,0,0,W,H);
+  }
   x.save();                                   // bloom pass
   x.filter = "blur(10px) saturate(1.3)";
   x.globalCompositeOperation = "screen";
   x.globalAlpha = 0.55;
-  x.drawImage(fxC,0,0,W,H);
+  x.drawImage(trails,0,0,W,H);
   x.restore();
-  x.drawImage(fxC,0,0,W,H);
+  x.drawImage(trails,0,0,W,H);
   // caption scrim + wordmark
   const g = x.createLinearGradient(0,H-110,0,H);
   g.addColorStop(0,"rgba(4,6,10,0)"); g.addColorStop(1,"rgba(4,6,10,.85)");
@@ -1643,8 +1703,9 @@ function buildCapture(){
   try{ x.letterSpacing = "1px"; }catch{}
   x.fillStyle = "rgba(233,240,247,.62)";
   x.font = "11px Inter, system-ui, sans-serif";
-  const la = Math.abs(view.lat).toFixed(2)+"°"+(view.lat>=0?"N":"S");
-  const lo = Math.abs(view.lon).toFixed(2)+"°"+(view.lon>=0?"E":"W");
+  const ll = centerLL();
+  const la = Math.abs(ll.lat).toFixed(2)+"°"+(ll.lat>=0?"N":"S");
+  const lo = Math.abs(ll.lon).toFixed(2)+"°"+(ll.lon>=0?"E":"W");
   const d = new Date(displayTime);
   const stamp = d.toISOString().slice(0,16).replace("T"," ")+" UTC";
   x.fillText(`${la} ${lo}  ·  ${stamp}  ·  the living wind  ·  data open-meteo.com`, 28, H-26);
@@ -1652,13 +1713,16 @@ function buildCapture(){
 }
 function capture(){
   try{
-    const url = buildCapture().toDataURL("image/png");
-    const d = new Date(displayTime);
+    const cv = buildCapture();
+    const url = cv.toDataURL("image/png");
+    const d = new Date(displayTime), ll = centerLL();
     const a = document.createElement("a");
-    a.download = `aeolus-${d.toISOString().slice(0,10)}-${view.lat.toFixed(1)}_${view.lon.toFixed(1)}.png`;
+    a.download = `aeolus-${d.toISOString().slice(0,10)}-${ll.lat.toFixed(1)}_${ll.lon.toFixed(1)}.png`;
     a.href = url;
     a.click();
-    showToast("Saved your sky ✦");
+    saveSky(cv, false).then(rec=>{
+      showToast(rec ? "Saved your sky ✦ — also kept in your gallery" : "Saved your sky ✦");
+    });
   }catch(e){
     showToast("Couldn't export the canvas.");
   }
@@ -1685,8 +1749,9 @@ function initAudio(){
   src.start();
 }
 function updateSound(){
-  if (!AC || !field) return;
-  const s = sampleAt(view.lon, view.lat, displayTime);
+  if (!AC || !activeField()) return;
+  const ll = centerLL();
+  const s = mode==="globe" ? sampleG(ll.lon, ll.lat, displayTime) : sampleAt(ll.lon, ll.lat, displayTime);
   const t = AC.currentTime;
   sGain.gain.setTargetAtTime(clamp(s.s/30,0,1)*0.14+0.008, t, 0.5);
   sFilter.frequency.setTargetAtTime(240+s.s*48, t, 0.6);
@@ -1708,7 +1773,10 @@ initRain();
 buildLegend();
 fetchField();
 requestAnimationFrame(frame);
-setInterval(()=>{ if (!document.hidden) fetchField(); }, 15*60*1000);  // keep the atmosphere fresh
+setInterval(()=>{                                                       // keep the atmosphere fresh
+  if (document.hidden) return;
+  if (mode==="globe") fetchGlobeField(); else fetchField();
+}, 15*60*1000);
 </script>
 </body>
 </html>
