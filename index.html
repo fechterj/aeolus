@@ -195,7 +195,15 @@
 
   @media (max-width:760px){
     #brand p{display:none}
-    #search{width:150px}#search:focus{width:170px}
+    /* phone widths: brand, then search + buttons on their own full row, then the two toolbars */
+    header{flex-wrap:wrap;justify-content:flex-start;gap:10px;left:12px;right:12px;top:12px}
+    #leftcol{display:contents}
+    #topright{order:1;flex:1 1 240px;min-width:0}
+    #layers{order:2}
+    #xp{order:3;flex-wrap:wrap;max-width:100%}
+    #layers button,#xp button{padding:7px 10px}
+    #searchwrap{flex:1;min-width:0}
+    #search,#search:focus{width:100%}
     #legend{display:none}
     #timebar{max-width:calc(100vw - 40px);bottom:14px}
     #panel{top:auto;bottom:76px;right:12px;left:12px;width:auto}
@@ -352,6 +360,68 @@ const $ = s => document.querySelector(s);
 const clamp = (v,a,b) => v<a?a:(v>b?b:v);
 const lerp = (a,b,t) => a+(b-a)*t;
 const TAU = Math.PI*2, D2R = Math.PI/180;
+const normLon = l => ((l+180)%360+360)%360-180;
+
+/* fetch that gives up: a hung connection must not leave the loader up forever.
+   A caller's own abort still surfaces as AbortError; a timeout surfaces as TimeoutError. */
+function fetchT(url, opts={}, ms=20000){
+  const ac = new AbortController();
+  const t = setTimeout(()=>ac.abort(new DOMException("timed out","TimeoutError")), ms);
+  if (opts.signal){
+    if (opts.signal.aborted) ac.abort();
+    else opts.signal.addEventListener("abort", ()=>ac.abort(), {once:true});
+  }
+  return fetch(url, {...opts, signal:ac.signal}).finally(()=>clearTimeout(t));
+}
+
+/* forecast cache (IndexedDB, its own database): a reload inside half an hour costs no API calls,
+   and a rate-limited visit can still show the last forecast it was sent */
+const FIELD_TTL = 30*60*1000, FIELD_STALE = 48*3600*1000;
+let cacheDBp = null;
+function cacheOpen(){
+  if (!cacheDBp) cacheDBp = new Promise((res,rej)=>{
+    const rq = indexedDB.open("aeolus-cache",1);
+    rq.onupgradeneeded = ()=>{ rq.result.createObjectStore("fields",{keyPath:"k"}); };
+    rq.onsuccess = ()=>res(rq.result);
+    rq.onerror = ()=>rej(rq.error);
+    rq.onblocked = ()=>rej(new Error("blocked"));
+  });
+  return cacheDBp;
+}
+async function cacheGet(k){
+  try{
+    const db = await cacheOpen();
+    return await new Promise(res=>{
+      const rq = db.transaction("fields").objectStore("fields").get(k);
+      rq.onsuccess = ()=>res(rq.result||null);
+      rq.onerror = ()=>res(null);
+    });
+  }catch{ return null; }
+}
+async function cachePut(k, field){
+  try{
+    const db = await cacheOpen();
+    await new Promise(res=>{
+      const tx = db.transaction("fields","readwrite");
+      tx.objectStore("fields").put({k, saved:Date.now(), field});
+      tx.oncomplete = tx.onerror = tx.onabort = ()=>res();
+    });
+  }catch{}
+}
+function fieldUsable(c, maxAge){
+  return !!(c && c.field && Array.isArray(c.field.hours) && c.field.hours.length > 1
+    && c.field.t1*1000 > Date.now() && Date.now()-c.saved < maxAge);
+}
+/* Open-Meteo says which allowance ran out; wait accordingly instead of hammering it */
+async function rateLimitPlan(res){
+  let reason = "";
+  try{ reason = (await res.json()).reason || ""; }catch{}
+  if (/daily/i.test(reason)) return { wait:0,
+    msg:"This connection has used today's free wind-data allowance. It resets at midnight UTC." };
+  if (/hourly/i.test(reason)) return { wait:10*60*1000,
+    msg:"This connection has used this hour's free wind-data allowance. Trying again in 10 minutes." };
+  return { wait:65*1000, msg:"The wind service is briefly busy. Trying again in about a minute." };
+}
 
 /* ---------------- state ---------------- */
 const view = { lon: 12, lat: 32, zoom: 3.1 };   // center + fractional zoom
@@ -489,11 +559,33 @@ function fieldCoversView(){
   return b.west+shift >= field.lon0 && b.east+shift <= field.lon0+field.span
       && b.north <= field.latN && b.south >= field.latS;
 }
-async function fetchField(){
+function applyField(f){
+  field = f;
+  displayTime = clamp(displayTime, f.t0*1000, f.t1*1000);
+  $("#slider").max = f.hours.length-1;
+  syncTimeUI();
+  layerDirty = true;
+  $("#loader").classList.add("gone");
+}
+/* use the cached flat forecast if it is recent enough and still covers this view */
+async function flatFromCache(seq, maxAge){
+  const c = await cacheGet("flat");
+  if (seq !== fieldSeq || !fieldUsable(c, maxAge)) return false;
+  const prev = field;
+  field = c.field;
+  if (!fieldCoversView()){ field = prev; return false; }
+  applyField(c.field);
+  return true;
+}
+async function fetchField(force){
   const seq = ++fieldSeq;
   if (fieldAbort) fieldAbort.abort();
   fieldAbort = new AbortController();
   if (mode === "globe") return;
+  if (!force && !field){
+    if (await flatFromCache(seq, FIELD_TTL)){ hideToast(); return; }
+    if (seq !== fieldSeq) return;
+  }
   const b = viewBounds();
   // pad the grid beyond the viewport so small pans stay covered
   const latN0 = clamp(b.north,-84,84), latS0 = clamp(b.south,-84,84);
@@ -515,14 +607,16 @@ async function fetchField(){
     + "&hourly=wind_speed_10m,wind_direction_10m,temperature_2m,precipitation"
     + "&wind_speed_unit=ms&forecast_days=3&timezone=GMT&timeformat=unixtime";
   try{
-    const res = await fetch(url, { signal: fieldAbort.signal });
+    const res = await fetchT(url, { signal: fieldAbort.signal });
     if (res.status === 429){
-      // free-tier quota: back off and retry automatically
-      if (seq === fieldSeq){
-        $("#loader").classList.add("gone");
-        showToast("The wind service is busy — refreshing again in 30 s.");
-        setTimeout(()=>{ if (seq === fieldSeq) fetchField(); }, 30000);
-      }
+      // free-tier quota: wait as long as the service says, and show the last forecast meanwhile
+      const plan = await rateLimitPlan(res);
+      if (seq !== fieldSeq) return;
+      $("#loader").classList.add("gone");
+      if (!field) await flatFromCache(seq, FIELD_STALE);
+      if (seq !== fieldSeq) return;
+      showToast(plan.msg + (field ? " Showing the last forecast received." : ""), null, 12000);
+      if (plan.wait) setTimeout(()=>{ if (seq === fieldSeq) fetchField(true); }, plan.wait);
       return;
     }
     if (!res.ok) throw new Error("HTTP "+res.status);
@@ -547,19 +641,19 @@ async function fetchField(){
         hours[h].pr[j] = pr[h] ?? 0;      // mm/h
       }
     }
-    field = { lon0, span, latN, latS, cols:GRID_COLS, rows:GRID_ROWS, hours,
-              t0: times[0], t1: times[nh-1], viewZoom: view.zoom };
-    displayTime = clamp(displayTime, field.t0*1000, field.t1*1000);
-    $("#slider").max = nh-1;
-    syncTimeUI();
-    layerDirty = true;
-    $("#loader").classList.add("gone");
+    const f = { lon0, span, latN, latS, cols:GRID_COLS, rows:GRID_ROWS, hours,
+                t0: times[0], t1: times[nh-1], viewZoom: view.zoom };
+    applyField(f);
     hideToast();
+    cachePut("flat", f);
   }catch(e){
     if (e.name === "AbortError") return;
     if (seq !== fieldSeq) return;
     $("#loader").classList.add("gone");
-    showToast("Couldn't reach the wind service.", ()=>fetchField());
+    if (!field) await flatFromCache(seq, FIELD_STALE);
+    if (seq !== fieldSeq) return;
+    showToast("Couldn't reach the wind service." + (field ? " Showing the last forecast received." : ""),
+              ()=>fetchField(true));
   }
 }
 
@@ -824,6 +918,8 @@ slider.addEventListener("input", ()=>{
 });
 addEventListener("keydown", e=>{
   if (e.target.tagName === "INPUT") return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;            // leave browser and system shortcuts alone
+  if (["Shift","Meta","Control","Alt","CapsLock"].includes(e.key)) return;
   if (cinema){ setCinema(false); return; }
   if (e.code === "Space"){ e.preventDefault(); setPlaying(!playing); }
   if (e.key === "+" || e.key === "=") zoomBy(0.8);
@@ -1041,33 +1137,38 @@ const DIRS = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W"
 const dirName = d => DIRS[Math.round(((d%360)+360)%360/22.5)%16];
 
 async function openPanel(lon,lat){
-  marker = {lon,lat}; mapDirty = true;
+  marker = {lon,lat}; mapDirty = true;       // marker keeps the raw longitude so it draws where you clicked
+  const qlon = normLon(lon);                 // the services want -180..180, even after panning round the world
   panel.classList.add("open");
   $("#pname").textContent = "…";
-  $("#pcoords").textContent = `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
+  $("#pcoords").textContent = `${lat.toFixed(2)}°, ${qlon.toFixed(2)}°`;
   $("#pspeed").innerHTML = "—";
   $("#pgust").textContent = $("#ptemp").textContent = $("#pdir").textContent = $("#psky").textContent = $("#prain").textContent = "—";
   const u = unit();
   try{
     const url = "https://api.open-meteo.com/v1/forecast"
-      + `?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}`
+      + `?latitude=${lat.toFixed(3)}&longitude=${qlon.toFixed(3)}`
       + "&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,temperature_2m,weather_code,precipitation"
       + "&hourly=wind_speed_10m&wind_speed_unit=ms&forecast_days=2&timezone=GMT&timeformat=unixtime";
-    const res = await fetch(url);
+    const res = await fetchT(url, {}, 15000);
+    if (!marker || Math.abs(marker.lon-lon)>1e-6 || Math.abs(marker.lat-lat)>1e-6) return;   // superseded
+    if (res.status === 429){ $("#pname").textContent = "Point details are rate-limited right now"; return; }
+    if (!res.ok) throw new Error("HTTP "+res.status);
     const d = await res.json();
-    if (!marker || Math.abs(marker.lon-lon)>1e-6) return;   // superseded
+    if (!d || !d.current || !d.hourly) throw new Error("bad point");
+    if (!marker || Math.abs(marker.lon-lon)>1e-6 || Math.abs(marker.lat-lat)>1e-6) return;   // superseded
     panelData = d;
     renderPanel();
     // reverse geocode for a human name (best effort)
     try{
-      const g = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`);
+      const g = await fetchT(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${qlon}&localityLanguage=en`, {}, 10000);
       const gj = await g.json();
       if (marker && Math.abs(marker.lon-lon)<1e-6){
         const name = [gj.city||gj.locality, gj.principalSubdivision, gj.countryName]
           .filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).slice(0,2).join(", ");
         $("#pname").textContent = name || "Open water / remote land";
       }
-    }catch{ $("#pname").textContent = `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`; }
+    }catch{ $("#pname").textContent = `${lat.toFixed(2)}°, ${qlon.toFixed(2)}°`; }
   }catch{
     $("#pname").textContent = "Couldn't load this point";
   }
@@ -1182,7 +1283,7 @@ $("#help .close").addEventListener("click", ()=>$("#help").classList.remove("ope
 $("#help").addEventListener("click", e=>{ if (e.target.id==="help") $("#help").classList.remove("open"); });
 
 let toastTimer = null;
-function showToast(msg, retry){
+function showToast(msg, retry, ms){
   const t = $("#toast");
   t.innerHTML = "";
   t.append(msg);
@@ -1194,7 +1295,7 @@ function showToast(msg, retry){
   }
   t.classList.add("show");
   clearTimeout(toastTimer);
-  if (!retry) toastTimer = setTimeout(hideToast, 4000);
+  if (!retry) toastTimer = setTimeout(hideToast, ms||4000);
 }
 function hideToast(){ $("#toast").classList.remove("show"); }
 
@@ -1241,15 +1342,25 @@ const CITIES = [
 [145,-37.8,2],[153,-27.5,1.5],[115.9,-31.95,1.5],[174.8,-36.8,1],[-157.9,21.3,1],[-149.9,61.2,0.6]
 ];
 
+let landLoading = false, landTries = 0;
 async function loadLand(){
-  if (landFeats) return;
+  if (landFeats || landLoading) return;
+  landLoading = true;
   try{
-    let gj;
-    const cached = localStorage.getItem("aeolus-land");
-    if (cached) gj = JSON.parse(cached);
-    else {
-      const r = await fetch("https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json");
+    let gj = null;
+    try{                                           // a bad cached copy is thrown away, not trusted forever
+      const cached = localStorage.getItem("aeolus-land");
+      if (cached){
+        gj = JSON.parse(cached);
+        if (!gj || !Array.isArray(gj.features) || !gj.features.length) gj = null;
+      }
+    }catch{ gj = null; }
+    if (!gj){
+      try{ localStorage.removeItem("aeolus-land"); }catch{}
+      const r = await fetchT("https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json", {}, 20000);
+      if (!r.ok) throw new Error("HTTP "+r.status);
       gj = await r.json();
+      if (!gj || !Array.isArray(gj.features) || !gj.features.length) throw new Error("bad land");
       try{ localStorage.setItem("aeolus-land", JSON.stringify(gj)); }catch{}
     }
     const feats = [];
@@ -1263,7 +1374,9 @@ async function loadLand(){
       else if (g.type === "MultiPolygon") for (const p of g.coordinates) feats.push(p.map(ring3));
     }
     landFeats = feats;
-  }catch{ landFeats = []; }
+  }catch{
+    if (++landTries < 4) setTimeout(loadLand, 15000*landTries);   // coastlines come back on their own
+  }finally{ landLoading = false; }
 }
 
 /* orthographic projection */
@@ -1397,10 +1510,27 @@ function drawGlobe(){
 
 /* global wind grid for the sphere: 24x12, one fetch. Open-Meteo counts every point as a call
    (600/min free): the flat grid (216) plus this one (288) must fit inside the same minute. */
-async function fetchGlobeField(){
+function applyGlobeField(f){
+  gfield=f;
+  displayTime=clamp(displayTime, f.t0*1000, f.t1*1000);
+  $("#slider").max=f.hours.length-1;
+  syncTimeUI();
+  $("#loader").classList.add("gone");
+}
+async function globeFromCache(seq, maxAge){
+  const c=await cacheGet("globe");
+  if (seq!==gSeq || !fieldUsable(c,maxAge)) return false;
+  applyGlobeField(c.field);
+  return true;
+}
+async function fetchGlobeField(force){
   const seq=++gSeq;
   if (gAbort) gAbort.abort();
   gAbort = new AbortController();
+  if (!force){
+    if (await globeFromCache(seq, FIELD_TTL)){ hideToast(); return; }
+    if (seq!==gSeq) return;
+  }
   const cols=24, rows=12, lats=[], lons=[];
   for (let r=0;r<rows;r++){
     const la=84-168*r/(rows-1);
@@ -1411,16 +1541,22 @@ async function fetchGlobeField(){
     + "&hourly=wind_speed_10m,wind_direction_10m,temperature_2m,precipitation"
     + "&wind_speed_unit=ms&forecast_days=3&timezone=GMT&timeformat=unixtime";
   try{
-    const res=await fetch(url,{signal:gAbort.signal});
+    const res=await fetchT(url,{signal:gAbort.signal});
     if (res.status===429){
-      if (seq===gSeq){ $("#loader").classList.add("gone");
-        showToast("The wind service is busy — globe retrying in 30 s."); setTimeout(()=>{ if(seq===gSeq) fetchGlobeField(); },30000); }
+      const plan=await rateLimitPlan(res);
+      if (seq!==gSeq) return;
+      $("#loader").classList.add("gone");
+      if (!gfield) await globeFromCache(seq, FIELD_STALE);
+      if (seq!==gSeq) return;
+      showToast(plan.msg+(gfield?" Showing the last forecast received.":""), null, 12000);
+      if (plan.wait) setTimeout(()=>{ if(seq===gSeq) fetchGlobeField(true); }, plan.wait);
       return;
     }
     if (!res.ok) throw new Error("HTTP "+res.status);
     let data=await res.json();
     if (seq!==gSeq) return;
     if (!Array.isArray(data)) data=[data];
+    if (data.length!==cols*rows || !data[0].hourly) throw new Error("bad grid");
     const times=data[0].hourly.time, nh=times.length, hours=[];
     for (let h=0;h<nh;h++) hours.push({ t:times[h],
       u:new Float32Array(data.length), v:new Float32Array(data.length),
@@ -1434,16 +1570,18 @@ async function fetchGlobeField(){
         hours[h].tp[j]=tp[h]??0; hours[h].pr[j]=pr[h]??0;
       }
     }
-    gfield={ lon0:-180, span:360, latN:84, latS:-84, cols, rows, hours, t0:times[0], t1:times[nh-1] };
-    displayTime=clamp(displayTime, gfield.t0*1000, gfield.t1*1000);
-    $("#slider").max=nh-1;
-    syncTimeUI();
-    $("#loader").classList.add("gone");
+    const f={ lon0:-180, span:360, latN:84, latS:-84, cols, rows, hours, t0:times[0], t1:times[nh-1] };
+    applyGlobeField(f);
+    hideToast();
+    cachePut("globe", f);
   }catch(e){
     if (e.name==="AbortError") return;
     if (seq!==gSeq) return;
     $("#loader").classList.add("gone");
-    showToast("Couldn't reach the wind service for the globe.", ()=>fetchGlobeField());
+    if (!gfield) await globeFromCache(seq, FIELD_STALE);
+    if (seq!==gSeq) return;
+    showToast("Couldn't reach the wind service for the globe."+(gfield?" Showing the last forecast received.":""),
+              ()=>fetchGlobeField(true));
   }
 }
 const _gs={u:0,v:0,s:0,tp:0,pr:0};
@@ -1784,8 +1922,8 @@ setMode("globe");              // open on the night globe; the flat map's wind l
 requestAnimationFrame(frame);
 setInterval(()=>{                                                       // keep the atmosphere fresh
   if (document.hidden) return;
-  if (mode==="globe") fetchGlobeField(); else fetchField();
-}, 15*60*1000);
+  if (mode==="globe") fetchGlobeField(true); else fetchField(true);
+}, 30*60*1000);                                                         // forecasts update hourly at best
 </script>
 </body>
 </html>
