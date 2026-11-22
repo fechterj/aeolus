@@ -23,7 +23,6 @@
   body.globe #layer,body.globe #fx{display:none}
   body.globe #map{opacity:0}   /* stays in the tree: it is the input surface for both modes */
   body.globe #globe,body.globe #gfx{display:block}
-  body.globe #layers button[data-l="temp"],body.globe #layers button[data-l="rain"]{opacity:.35;pointer-events:none}
   #bloom{filter:blur(11px) saturate(1.35) brightness(1.15);mix-blend-mode:screen;opacity:.55}
   .cinebar{position:fixed;left:0;right:0;height:0;background:#000;z-index:40;
     transition:height 1s cubic-bezier(.6,0,.2,1);pointer-events:none}
@@ -233,9 +232,7 @@
       <button id="globebtn" title="Night globe (G)">🌍 globe</button>
       <button id="cinebtn" title="Cinema mode (C)">⛶ cinema</button>
       <button id="capbtn" title="Save this sky as a poster">⤓ capture</button>
-      <button id="galbtn" title="Your collected skies">▦ gallery</button>
-      <button id="sndbtn" title="Hear the wind">🔇 sound</button>
-    </div>
+      <button id="galbtn" title="Your collected skies">▦ gallery</button>    </div>
   </div>
   <div id="topright">
     <div id="searchwrap">
@@ -328,9 +325,7 @@
       <li><b>Slider</b> scrubs up to 3 days of forecast · <b>NOW</b> returns to the present</li>
       <li><b>Layers</b> — toggle wind streamlines, temperature field, and live rain under the brand</li>
       <li><b>Silk</b> — long-exposure mode: the wind paints itself into ribbons of light</li>
-      <li><b>Cinema</b> — everything disappears and the atmosphere performs · <b>Capture</b> saves it as a poster</li>
-      <li><b>Sound</b> — hear the wind at the center of your view</li>
-      <li><b>Globe</b> (`G`) — the same wind wrapping a rotating night Earth, city lights and all</li>
+      <li><b>Cinema</b> — everything disappears and the atmosphere performs · <b>Capture</b> saves it as a poster</li>      <li><b>Globe</b> (G) — the same wind, temperature and rain wrapping a rotating night Earth, city lights and all</li>
       <li><b>Gallery</b> — every sky you capture is kept on this device; cinema collects them as it plays</li>
       <li><b>Search</b> flies to any place on Earth</li>
       <li>Every streamline is real air: ~3,000 particles riding the actual forecast wind field, colored by speed</li>
@@ -368,7 +363,7 @@ let playing = false;
 let mapDirty = true;
 let layerDirty = true;
 const show = { wind:true, temp:false, rain:false };
-let silk = false, cinema = false, soundOn = false, preCinema = null;
+let silk = false, cinema = false, preCinema = null;
 let autoBucket = null, autoCount = 0;
 let marker = null;             // {lon,lat} of clicked point
 let panelData = null;
@@ -870,9 +865,7 @@ function frame(now){
   }
   // bloom: blurred copy of the trails, screen-blended by CSS
   bctx.clearRect(0,0,W,H);
-  bctx.drawImage(mode==="globe"?gfxC:fxC,0,0,W,H);
-  if (soundOn) updateSound();
-  if (cinema && playing && af){
+  bctx.drawImage(mode==="globe"?gfxC:fxC,0,0,W,H);  if (cinema && playing && af){
     const bucket = Math.floor(displayTime/7200000);   // a kept frame every 2 forecast hours
     if (bucket !== autoBucket){
       autoBucket = bucket;
@@ -1007,7 +1000,7 @@ addEventListener("resize", ()=>{
 const tempUnit = () => unit().name==="mph" ? {f:c=>c*9/5+32, s:"°F"} : {f:c=>c, s:"°C"};
 function buildLegend(){
   const u = unit(), tu = tempUnit();
-  const sh = mode==="globe" ? {wind:true,temp:false,rain:false} : show;
+  const sh = show;
   const sec = (title, grad, labels) =>
     `<div class="section"><div class="title">${title}</div>`+
     `<div class="bar" style="background:${grad}"></div>`+
@@ -1376,6 +1369,7 @@ function drawGlobe(){
   g.addColorStop(0,"#0e1a30"); g.addColorStop(0.7,"#0a1222"); g.addColorStop(1,"#050a16");
   gctx.fillStyle=g; gctx.beginPath(); gctx.arc(cx,cy,R,0,TAU); gctx.fill();
   drawLand();
+  drawGlobeLayer();
   const t=performance.now()/1000;
   for (let i=0;i<CITIES.length;i++){
     const c=CITIES[i], p=gproj(c[0],c[1]);
@@ -1419,7 +1413,8 @@ async function fetchGlobeField(){
   try{
     const res=await fetch(url,{signal:gAbort.signal});
     if (res.status===429){
-      if (seq===gSeq){ showToast("The wind service is busy — globe retrying in 30 s."); setTimeout(()=>{ if(seq===gSeq) fetchGlobeField(); },30000); }
+      if (seq===gSeq){ $("#loader").classList.add("gone");
+        showToast("The wind service is busy — globe retrying in 30 s."); setTimeout(()=>{ if(seq===gSeq) fetchGlobeField(); },30000); }
       return;
     }
     if (!res.ok) throw new Error("HTTP "+res.status);
@@ -1451,7 +1446,7 @@ async function fetchGlobeField(){
     showToast("Couldn't reach the wind service for the globe.", ()=>fetchGlobeField());
   }
 }
-const _gs={u:0,v:0,s:0};
+const _gs={u:0,v:0,s:0,tp:0,pr:0};
 function sampleG(lon,lat,tMs){
   const f=gfield;
   const fx=(((lon+180)%360+360)%360)/360*f.cols;
@@ -1467,7 +1462,58 @@ function sampleG(lon,lat,tMs){
   const u1=lerp(lerp(B.u[i00],B.u[i10],tx),lerp(B.u[i01],B.u[i11],tx),ty);
   const v1=lerp(lerp(B.v[i00],B.v[i10],tx),lerp(B.v[i01],B.v[i11],tx),ty);
   _gs.u=lerp(u0,u1,tt); _gs.v=lerp(v0,v1,tt); _gs.s=Math.hypot(_gs.u,_gs.v);
+  if (show.temp || show.rain){
+    const t0v=lerp(lerp(A.tp[i00],A.tp[i10],tx),lerp(A.tp[i01],A.tp[i11],tx),ty);
+    const t1v=lerp(lerp(B.tp[i00],B.tp[i10],tx),lerp(B.tp[i01],B.tp[i11],tx),ty);
+    const p0v=lerp(lerp(A.pr[i00],A.pr[i10],tx),lerp(A.pr[i01],A.pr[i11],tx),ty);
+    const p1v=lerp(lerp(B.pr[i00],B.pr[i10],tx),lerp(B.pr[i01],B.pr[i11],tx),ty);
+    _gs.tp=lerp(t0v,t1v,tt); _gs.pr=lerp(p0v,p1v,tt);
+  }
   return _gs;
+}
+
+/* temperature and rain on the sphere: a small square image of the visible disc,
+   each pixel unprojected to lon/lat and sampled, then scaled up smooth and clipped to the limb */
+const GL = 128;
+const goff = document.createElement("canvas");
+goff.width = GL; goff.height = GL;
+const goctx = goff.getContext("2d");
+function drawGlobeLayer(){
+  if (!gfield || (!show.temp && !show.rain)) return;
+  const R=globeR(), cx=W/2, cy=H/2;
+  const img=goctx.createImageData(GL,GL), d=img.data;
+  const l0=gview.lat0*D2R, sl0=Math.sin(l0), cl0=Math.cos(l0);
+  for (let j=0;j<GL;j++){
+    const Y=1-2*(j+0.5)/GL;
+    for (let i=0;i<GL;i++){
+      const X=2*(i+0.5)/GL-1, dd=X*X+Y*Y;
+      if (dd>=1) continue;                       // off the disc: stays transparent
+      const Z=Math.sqrt(1-dd);
+      const lat=Math.asin(clamp(Z*sl0+Y*cl0,-1,1))/D2R;
+      const lon=gview.lon0+Math.atan2(X, Z*cl0-Y*sl0)/D2R;
+      const s=sampleG(lon,lat,displayTime);
+      let r=0,g=0,b=0,a=0;
+      if (show.temp){
+        const c=tempColor(s.tp);
+        r=c[0]; g=c[1]; b=c[2]; a=0.42;
+      }
+      if (show.rain && s.pr>0.02){
+        const c=rainColor(s.pr);
+        const ap=c[3], inv=1-ap, oa=ap+a*inv;
+        if (oa>0){
+          r=(c[0]*ap+r*a*inv)/oa; g=(c[1]*ap+g*a*inv)/oa; b=(c[2]*ap+b*a*inv)/oa; a=oa;
+        }
+      }
+      const n=(j*GL+i)*4;
+      d[n]=r; d[n+1]=g; d[n+2]=b; d[n+3]=a*255;
+    }
+  }
+  goctx.putImageData(img,0,0);
+  gctx.save();
+  gctx.beginPath(); gctx.arc(cx,cy,R,0,TAU); gctx.clip();
+  gctx.imageSmoothingEnabled=true; gctx.imageSmoothingQuality="high";
+  gctx.drawImage(goff, cx-R, cy-R, 2*R, 2*R);
+  gctx.restore();
 }
 function spawnG(p){
   p.lat=Math.asin(Math.random()*2-1)/D2R;
@@ -1499,7 +1545,7 @@ function stepGlobe(){
     const dist=Math.hypot(dx,dy);
     if (dist>3.6){ const k=3.6/dist; dx*=k; dy*=k; dLon*=k; dLat*=k; }
     p.lon+=dLon; p.lat+=dLat; p.age++;
-    if (b.z<=0.02||dist<0.02) continue;
+    if (!show.wind||b.z<=0.02||dist<0.02) continue;
     gfx.strokeStyle=silk?speedColor(w.s).replace(/,0\.6\)$/,",0.5)"):speedColor(w.s);
     gfx.beginPath(); gfx.moveTo(a.x,a.y); gfx.lineTo(a.x+dx,a.y+dy); gfx.stroke();
   }
@@ -1728,43 +1774,6 @@ function capture(){
   }
 }
 $("#capbtn").addEventListener("click", capture);
-
-/* sound: the wind at the center of your view, as breath */
-let AC = null, sGain = null, sFilter = null, sPan = null;
-function initAudio(){
-  AC = new (window.AudioContext||window.webkitAudioContext)();
-  const len = 2*AC.sampleRate;
-  const buf = AC.createBuffer(1,len,AC.sampleRate);
-  const ch = buf.getChannelData(0);
-  for (let i=0;i<len;i++) ch[i] = Math.random()*2-1;
-  const src = AC.createBufferSource();
-  src.buffer = buf; src.loop = true;
-  sFilter = AC.createBiquadFilter();
-  sFilter.type = "bandpass"; sFilter.frequency.value = 400; sFilter.Q.value = 0.7;
-  sGain = AC.createGain(); sGain.gain.value = 0;
-  sPan = AC.createStereoPanner ? AC.createStereoPanner() : null;
-  src.connect(sFilter); sFilter.connect(sGain);
-  if (sPan){ sGain.connect(sPan); sPan.connect(AC.destination); }
-  else sGain.connect(AC.destination);
-  src.start();
-}
-function updateSound(){
-  if (!AC || !activeField()) return;
-  const ll = centerLL();
-  const s = mode==="globe" ? sampleG(ll.lon, ll.lat, displayTime) : sampleAt(ll.lon, ll.lat, displayTime);
-  const t = AC.currentTime;
-  sGain.gain.setTargetAtTime(clamp(s.s/30,0,1)*0.14+0.008, t, 0.5);
-  sFilter.frequency.setTargetAtTime(240+s.s*48, t, 0.6);
-  if (sPan) sPan.pan.setTargetAtTime(clamp(s.u/20,-1,1)*0.7, t, 0.8);
-}
-$("#sndbtn").addEventListener("click", ()=>{
-  if (!AC) initAudio();
-  if (AC.state === "suspended") AC.resume();
-  soundOn = !soundOn;
-  if (!soundOn && sGain) sGain.gain.setTargetAtTime(0, AC.currentTime, 0.3);
-  $("#sndbtn").classList.toggle("on", soundOn);
-  $("#sndbtn").innerHTML = (soundOn ? "🔊" : "🔇") + " sound";
-});
 
 /* ---------------- init ---------------- */
 sizeCanvases();
