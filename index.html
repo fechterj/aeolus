@@ -2576,7 +2576,16 @@ function startupProblem(msg){
   l.classList.add("gone");
   showToast(msg, ()=>location.reload());
 }
-addEventListener("error", e=>startupProblem("Aeolus hit a problem starting: "+(e.message||"unknown error")));
+/* only our own errors count: an extension, content blocker or in-app browser can inject scripts from
+   elsewhere, and the browser reports their errors here as a bare "Script error." with no detail */
+function foreignError(e){
+  if (!e.filename || /^script error\.?$/i.test(e.message || "")) return true;
+  try{ return new URL(e.filename).origin !== location.origin; }catch{ return true; }
+}
+addEventListener("error", e=>{
+  if (foreignError(e)){ console.warn("ignored an error from outside Aeolus:", e.message, e.filename || ""); return; }
+  startupProblem("Aeolus hit a problem starting: "+(e.message||"unknown error"));
+});
 addEventListener("unhandledrejection", e=>startupProblem("Aeolus hit a problem starting: "+((e.reason&&e.reason.message)||e.reason||"unknown error")));
 setTimeout(()=>startupProblem("The wind data is taking too long to arrive."), 30000);
 

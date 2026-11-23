@@ -167,6 +167,7 @@ const serveFor = (win, realFetch) => (input, opts) => {
   const url = String(input && input.url || input);
   let u; try { u = new URL(url, win.location.href); } catch { return realFetch(input, opts); }
   const reply = body => new Promise((res, rej) => setTimeout(() => {
+    if (!win.Response){ rej(new Error("frame closed")); return; }   // the frame was removed while this was pending
     if (opts && opts.signal && opts.signal.aborted){ rej(new win.DOMException("aborted", "AbortError")); return; }
     res(new win.Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
   }, 15));
@@ -703,6 +704,14 @@ async function linkTests(){
   ok(!!b && b.mode === "globe" && !q.$("#panel").classList.contains("open"), "a broken link falls back to the normal start", b ? "mode=" + b.mode : "no app");
   await sleep(1200);
   ok(!/problem starting/.test(q.$("#toast").textContent), "a broken link raises no error", q.$("#toast").textContent.slice(0, 80));
+  // a browser's own injected scripts (Firefox on iOS, extensions) fail as a bare "Script error.": not ours, so no alarm
+  q.$("#loader").classList.remove("gone");
+  q.win.dispatchEvent(new q.win.ErrorEvent("error", { message: "Script error.", filename: "" }));
+  q.win.dispatchEvent(new q.win.ErrorEvent("error", { message: "boom", filename: "moz-extension://abc/inject.js" }));
+  const foreignQuiet = !q.$("#loader").classList.contains("gone") && !/problem starting/.test(q.$("#toast").textContent);
+  q.win.dispatchEvent(new q.win.ErrorEvent("error", { message: "boom", filename: q.win.location.href }));
+  ok(foreignQuiet && /problem starting: boom/.test(q.$("#toast").textContent),
+     "errors from outside the app are ignored at startup; its own still show", (foreignQuiet ? "foreign quiet, " : "foreign raised alarm, ") + q.$("#toast").textContent.slice(0, 60));
   const r = await open(375, 812, "#m=g&ll=48.85,2.35&z=1.2&l=w&p=48.857,2.352"), c = r.win.aeolus;
   ok(Math.abs(c.normLon(c.globe.lon - 2.35)) < 4 && Math.abs(c.globe.lat - 48.85) < 0.5, "a globe link turns the globe to its place",
      c.globe.lon.toFixed(1) + "," + c.globe.lat.toFixed(1));
