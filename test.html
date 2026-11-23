@@ -575,6 +575,11 @@ async function faultTests(){
   ok(/Couldn/.test(toast(p)) && !a.ready, "broken answer: says it could not get the wind, draws nothing wrong", toast(p).slice(0, 90) || "no message");
   ok(!/problem starting/.test(toast(p)) && a.size.W > 0, "broken answer: the app keeps running");
   ok(grids(p) === 2, "a failed forecast is asked for once more before saying it failed", grids(p) + " requests");
+  const hint = p.$("#toast button.hint");
+  if (hint) hint.click();
+  const steps = p.$("#toast .hintsteps");
+  ok(!!hint && !!steps && /reload/.test(steps.textContent) && /open-meteo/.test(steps.textContent) && p.$("#toast").classList.contains("show"),
+     "the failure offers a tracker-blocker hint; tapping it says how to allow the site", steps ? steps.textContent.slice(0, 80) : hint ? "tap showed nothing" : "no hint");
   faults.delete(p.win);
   const retry = p.$("#toast button");
   if (retry){ retry.click(); await until(() => a.ready, 6000); }

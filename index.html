@@ -160,6 +160,8 @@
     visibility:hidden;transition:.3s, visibility 0s .3s}   /* hidden once faded, so its Retry leaves the Tab order */
   #toast.show{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto;visibility:visible;transition:.3s}
   #toast button{color:var(--accent);margin-left:10px;font-weight:600}
+  #toast button.hint{display:block;margin:6px 0 0;font-weight:500;text-decoration:underline;text-underline-offset:2px}
+  #toast .hintsteps{margin-top:6px;line-height:1.4}
   #loader{position:fixed;inset:0;z-index:50;background:var(--bg);display:grid;place-items:center;
     transition:opacity .8s;text-align:center}
   #loader.gone{opacity:0;pointer-events:none}
@@ -500,6 +502,14 @@ const normLon = l => ((l+180)%360+360)%360-180;
 
 /* fetch that gives up: a hung connection must not leave the loader up forever.
    A caller's own abort still surfaces as AbortError; a timeout surfaces as TimeoutError. */
+/* a short reason for a failed forecast, so a report from a phone says what happened */
+function whyFailed(e){
+  if (!e) return "";
+  if (e.name === "TimeoutError") return " (no answer in time)";
+  if (/^HTTP \d+/.test(e.message || "")) return " ("+e.message+")";
+  if (e.message === "bad grid") return " (an incomplete answer)";
+  return " ("+String(e.message || e.name || "unknown").slice(0, 60)+")";
+}
 function fetchT(url, opts={}, ms=20000){
   const ac = new AbortController();
   let timedOut = false;
@@ -796,7 +806,7 @@ async function fetchField(force, retried){
     + "&hourly=wind_speed_10m,wind_direction_10m,temperature_2m,precipitation"
     + "&wind_speed_unit=ms&forecast_days=3&timezone=GMT&timeformat=unixtime";
   try{
-    const res = await fetchT(url, { signal: fieldAbort.signal });
+    const res = await fetchT(url, { signal: fieldAbort.signal }, retried ? 45000 : 20000);
     if (res.status === 429){
       // free-tier quota: wait as long as the service says, and show the last forecast meanwhile
       const plan = await rateLimitPlan(res);
@@ -844,8 +854,9 @@ async function fetchField(force, retried){
     $("#loader").classList.add("gone");
     if (!field) await flatFromCache(seq, FIELD_STALE);
     if (seq !== fieldSeq) return;
-    showToast("Couldn't reach the wind service." + (field ? " Showing the last forecast received." : ""),
+    showToast("Couldn't reach the wind service" + whyFailed(e) + "." + (field ? " Showing the last forecast received." : ""),
               ()=>fetchField(true));
+    addBlockerHint(e);
   }
 }
 
@@ -1739,6 +1750,31 @@ function showToast(msg, retry, ms){
   if (!retry && ms !== Infinity) toastTimer = setTimeout(hideToast, ms||4000);   // Infinity: stays until replaced or hidden
 }
 function hideToast(){ $("#toast").classList.remove("show"); }
+/* a tracker blocker (Firefox Focus, Brave Shields, Safari content blockers, extensions) can stop the
+   forecast request; the message offers a tap that says how to let it through in this browser */
+function blockerSteps(){
+  const ua = navigator.userAgent;
+  if (/Focus|Klar/.test(ua)) return "In Firefox Focus: tap the shield next to the address, turn tracking protection off for this site, then reload.";
+  if (/FxiOS|Firefox\//.test(ua)) return "In Firefox: tap the shield in the address bar, turn Enhanced Tracking Protection off for this site, then reload.";
+  if (navigator.brave) return "In Brave: tap the lion in the address bar, turn Shields down for this site, then reload.";
+  if (/Ddg\//.test(ua)) return "In DuckDuckGo: open the menu, choose to turn off privacy protection for this site, then reload.";
+  if (/EdgiOS|Edg\//.test(ua)) return "In Edge: tap the lock or the tracking-prevention icon by the address and allow this site, then reload.";
+  if (/iPhone|iPad|Macintosh/.test(ua) && /Safari/.test(ua) && !/CriOS|Chrome\//.test(ua))
+    return "In Safari: tap the page menu (aA) in the address bar, choose Turn off Content Blockers, then reload.";
+  return "In your blocker or extension: allow this site, then reload.";
+}
+function addBlockerHint(e){
+  if (e && /^HTTP /.test(e.message || "")) return;      // the service answered: not a blocker
+  const t = $("#toast"), b = document.createElement("button");
+  b.className = "hint"; b.textContent = "Blocking trackers?";
+  b.addEventListener("click", ()=>{
+    const d = document.createElement("div");
+    d.className = "hintsteps";
+    d.textContent = blockerSteps() + " Aeolus only asks api.open-meteo.com for the forecast; nothing on it tracks you.";
+    b.replaceWith(d);
+  });
+  t.appendChild(b);
+}
 
 /* ---------------- globe mode ---------------- */
 let mode = "flat";
@@ -2114,7 +2150,7 @@ async function fetchGlobeField(force, retried){
     + "&hourly=wind_speed_10m,wind_direction_10m,temperature_2m,precipitation"
     + "&wind_speed_unit=ms&forecast_days=3&timezone=GMT&timeformat=unixtime";
   try{
-    const res=await fetchT(url,{signal:gAbort.signal});
+    const res=await fetchT(url,{signal:gAbort.signal}, retried ? 45000 : 20000);   // a slow phone gets longer the second time
     if (res.status===429){
       const plan=await rateLimitPlan(res);
       dataBlockedUntil = Date.now() + (plan.wait || 3*3600*1000) - 1000;
@@ -2156,8 +2192,9 @@ async function fetchGlobeField(force, retried){
     $("#loader").classList.add("gone");
     if (!gfield) await globeFromCache(seq, FIELD_STALE);
     if (seq!==gSeq) return;
-    showToast("Couldn't reach the wind service for the globe."+(gfield?" Showing the last forecast received.":""),
+    showToast("Couldn't reach the wind service for the globe"+whyFailed(e)+"."+(gfield?" Showing the last forecast received.":""),
               ()=>fetchGlobeField(true));
+    addBlockerHint(e);
   }
 }
 const _gs={u:0,v:0,s:0,tp:0,pr:0};
@@ -2605,7 +2642,7 @@ addEventListener("unhandledrejection", e=>{
   startupProblemFromRejection(e);
 });
 function startupProblemFromRejection(e){ startupProblem("Aeolus hit a problem starting: "+((e.reason&&e.reason.message)||e.reason||"unknown error")); }
-setTimeout(()=>startupProblem("The wind data is taking too long to arrive."), 50000);   // after a slow phone's retry
+setTimeout(()=>startupProblem("The wind data is taking too long to arrive."), 75000);   // after a slow phone's retry (20 s + 2.5 s + 45 s)
 
 /* ---------------- NASA Black Marble night lights ----------------
    One image of every lit place on Earth (NASA, 2016, from the Suomi NPP satellite), wrapped onto the globe
