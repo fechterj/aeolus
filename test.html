@@ -708,6 +708,8 @@ async function linkTests(){
   q.$("#loader").classList.remove("gone");
   q.win.dispatchEvent(new q.win.ErrorEvent("error", { message: "Script error.", filename: "" }));
   q.win.dispatchEvent(new q.win.ErrorEvent("error", { message: "boom", filename: "moz-extension://abc/inject.js" }));
+  const fr = new q.win.Error("injected failed"); fr.stack = "inject@moz-extension://abc/inject.js:3:7";
+  q.win.dispatchEvent(new q.win.PromiseRejectionEvent("unhandledrejection", { promise: q.win.Promise.resolve(), reason: fr }));
   const foreignQuiet = !q.$("#loader").classList.contains("gone") && !/problem starting/.test(q.$("#toast").textContent);
   q.win.dispatchEvent(new q.win.ErrorEvent("error", { message: "boom", filename: q.win.location.href }));
   ok(foreignQuiet && /problem starting: boom/.test(q.$("#toast").textContent),

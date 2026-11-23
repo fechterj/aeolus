@@ -2586,7 +2586,12 @@ addEventListener("error", e=>{
   if (foreignError(e)){ console.warn("ignored an error from outside Aeolus:", e.message, e.filename || ""); return; }
   startupProblem("Aeolus hit a problem starting: "+(e.message||"unknown error"));
 });
-addEventListener("unhandledrejection", e=>startupProblem("Aeolus hit a problem starting: "+((e.reason&&e.reason.message)||e.reason||"unknown error")));
+addEventListener("unhandledrejection", e=>{
+  const st = e.reason && typeof e.reason.stack === "string" ? e.reason.stack : "";
+  if (st && /[a-z-]+:\/\//i.test(st) && !st.includes(location.origin)){ console.warn("ignored a failure from outside Aeolus:", e.reason && e.reason.message); return; }
+  startupProblemFromRejection(e);
+});
+function startupProblemFromRejection(e){ startupProblem("Aeolus hit a problem starting: "+((e.reason&&e.reason.message)||e.reason||"unknown error")); }
 setTimeout(()=>startupProblem("The wind data is taking too long to arrive."), 30000);
 
 /* ---------------- NASA Black Marble night lights ----------------
