@@ -759,7 +759,7 @@ async function flatFromCache(seq, maxAge){
   applyField(c.field);
   return true;
 }
-async function fetchField(force){
+async function fetchField(force, retried){
   if (Date.now() < dataBlockedUntil){
     // no requests while blocked, but a saved forecast for this view can still be shown
     if (!field && mode !== "globe" && await flatFromCache(++fieldSeq, FIELD_STALE)) hideToast();
@@ -840,6 +840,7 @@ async function fetchField(force){
   }catch(e){
     if (e.name === "AbortError") return;
     if (seq !== fieldSeq) return;
+    if (!retried){ setTimeout(()=>{ if (seq === fieldSeq) fetchField(true, true); }, 2500); return; }   // once more first
     $("#loader").classList.add("gone");
     if (!field) await flatFromCache(seq, FIELD_STALE);
     if (seq !== fieldSeq) return;
@@ -2091,7 +2092,7 @@ async function globeFromCache(seq, maxAge){
   applyGlobeField(c.field);
   return true;
 }
-async function fetchGlobeField(force){
+async function fetchGlobeField(force, retried){
   if (Date.now() < dataBlockedUntil){
     if (!gfield && await globeFromCache(++gSeq, FIELD_STALE)) hideToast();
     return;
@@ -2150,6 +2151,8 @@ async function fetchGlobeField(force){
   }catch(e){
     if (e.name==="AbortError") return;
     if (seq!==gSeq) return;
+    // a phone on a weak signal often drops the first try: ask once more before saying so
+    if (!retried){ setTimeout(()=>{ if (seq===gSeq) fetchGlobeField(true, true); }, 2500); return; }
     $("#loader").classList.add("gone");
     if (!gfield) await globeFromCache(seq, FIELD_STALE);
     if (seq!==gSeq) return;
@@ -2580,8 +2583,15 @@ function startupProblem(msg){
 }
 /* only our own errors count: an extension, content blocker or in-app browser can inject scripts from
    elsewhere, and the browser reports their errors here as a bare "Script error." with no detail */
+/* browsers on iPhone (Firefox, Chrome, Edge) run their own helper scripts inside every page, and WebKit can
+   report their errors under the page's own address, e.g. "Can't find variable: __firefox__" */
+const INJECTED = /__firefox__|__gCrWeb|__crWeb|__edge|webkit\.messageHandlers|safari-(web-)?extension:|user-script:/i;
+function foreignStack(st){ return !!st && /[a-z-]+:\/\//i.test(st) && !st.includes(location.origin); }
 function foreignError(e){
   if (!e.filename || /^script error\.?$/i.test(e.message || "")) return true;
+  if (INJECTED.test(e.message || "") || INJECTED.test(e.filename)) return true;
+  const st = e.error && typeof e.error.stack === "string" ? e.error.stack : "";
+  if (INJECTED.test(st) || foreignStack(st)) return true;
   try{ return new URL(e.filename).origin !== location.origin; }catch{ return true; }
 }
 addEventListener("error", e=>{
@@ -2590,11 +2600,12 @@ addEventListener("error", e=>{
 });
 addEventListener("unhandledrejection", e=>{
   const st = e.reason && typeof e.reason.stack === "string" ? e.reason.stack : "";
-  if (st && /[a-z-]+:\/\//i.test(st) && !st.includes(location.origin)){ console.warn("ignored a failure from outside Aeolus:", e.reason && e.reason.message); return; }
+  const m = (e.reason && e.reason.message) || String(e.reason || "");
+  if (foreignStack(st) || INJECTED.test(st) || INJECTED.test(m)){ console.warn("ignored a failure from outside Aeolus:", e.reason && e.reason.message); return; }
   startupProblemFromRejection(e);
 });
 function startupProblemFromRejection(e){ startupProblem("Aeolus hit a problem starting: "+((e.reason&&e.reason.message)||e.reason||"unknown error")); }
-setTimeout(()=>startupProblem("The wind data is taking too long to arrive."), 30000);
+setTimeout(()=>startupProblem("The wind data is taking too long to arrive."), 50000);   // after a slow phone's retry
 
 /* ---------------- NASA Black Marble night lights ----------------
    One image of every lit place on Earth (NASA, 2016, from the Suomi NPP satellite), wrapped onto the globe
