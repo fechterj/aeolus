@@ -236,6 +236,7 @@ async function unitTests(p){
   ok(a.fieldUsable({ field: f, saved: now - 2e6 }, 1e6) === false, "cache: an old forecast is refused");
   ok(a.fieldUsable({ field: { hours: [1, 2, 3], t1: now / 1000 - 10 }, saved: now }, 1e6) === false, "cache: a forecast that ended is refused");
   ok(a.fieldUsable(null, 1e6) === false && a.fieldUsable({ saved: now }, 1e6) === false, "cache: junk is refused");
+  const lb = p.$('#layers button[data-l="lights"]'); if (!a.show.lights) lb.click();   // lights start off; the city list loads when they turn on
   await until(() => a.citySource === "Natural Earth", 6000);
   ok(a.cities >= 7000 && a.citySource === "Natural Earth", "the full list of cities and towns loads", a.cities + " from " + a.citySource);
   // the light pulse: a smooth pattern over the sphere, never flicker
@@ -579,13 +580,13 @@ async function faultTests(){
   ok(!!retry && a.ready, "Retry fetches again once the service answers", retry ? "still not ready" : "no Retry button");
 
   // the city file missing: the built-in lights stay
-  const nc = await open(375, 812, "", "nocities"), na = nc.win.aeolus;
+  const nc = await open(375, 812, "#n=1", "nocities"), na = nc.win.aeolus;
   await sleep(2500);
   ok(na.citySource === "built-in" && na.cities >= 500 && !/problem starting/.test(nc.$("#toast").textContent), "if the city file cannot load, the built-in lights stay",
      na.cities + " from " + na.citySource);
 
   // NASA's night lights: drawn when the image loads; the dots take over when it cannot
-  const nl = await open(375, 812), nla = nl.win.aeolus;
+  const nl = await open(375, 812, "#n=1"), nla = nl.win.aeolus;
   const gotNight = await until(() => nla.nightSource === "Black Marble", 8000);
   if (!gotNight) skip("NASA night lights show on the globe", "WebGL or the image is not available in this browser");
   else {
@@ -611,7 +612,7 @@ async function faultTests(){
     ok(pts.length >= 50 && Math.abs(best.dx) <= 1 && Math.abs(best.dy) <= 1, "NASA's lights line up with the cities and coastlines", "best fit shifted " + best.dx + "," + best.dy + " px over " + pts.length + " cities");
     // no line where longitude wraps behind the pole: that column must not stand out from its neighbours
     // tilt the globe through a link (the app's security policy rightly refuses eval); silk holds the spin still
-    nl.win.location.hash = "#m=g&ll=60,30&z=1&l=-&s=1";
+    nl.win.location.hash = "#m=g&ll=60,30&z=1&l=-&s=1&n=1";
     await sleep(500);
     nl.win.drawGlobe(); nl.win.drawNight();
     pc.clearRect(0, 0, probe.width, probe.height); pc.drawImage(cv, 0, 0);
@@ -620,13 +621,13 @@ async function faultTests(){
     const seam = colAvg(0), side = Math.max(colAvg(-2), colAvg(2), 1);
     ok(seam <= side * 1.5 + 2, "no seam line behind the pole", "seam column " + seam.toFixed(1) + " vs neighbours " + side.toFixed(1));
   }
-  const nn = await open(375, 812, "", "nonight"), nna = nn.win.aeolus;
+  const nn = await open(375, 812, "#n=1", "nonight"), nna = nn.win.aeolus;
   await sleep(2500);
   ok(nna.nightSource === "dots" && !nn.$("#nightgl").classList.contains("ready") && !/problem starting/.test(nn.$("#toast").textContent),
      "if the night-lights image cannot load, the dots stay", nna.nightSource);
 
   // without createImageBitmap (older Safari) the image still loads, through an <img>
-  const nb = await open(375, 812, "", "nobitmap"), nba = nb.win.aeolus;
+  const nb = await open(375, 812, "#n=1", "nobitmap"), nba = nb.win.aeolus;
   const viaImg = await until(() => nba.nightSource === "Black Marble", 8000);
   ok(typeof nb.win.createImageBitmap !== "function" && viaImg, "NASA lights load in browsers without createImageBitmap", nba.nightSource);
 
@@ -641,9 +642,9 @@ async function faultTests(){
     ok(gone && back, "NASA lights come back after the graphics context is lost", (gone ? "lost, " : "never lost, ") + nba.nightSource);
   }
 
-  // the lights button turns the city lights off and on, and a link carries the choice
+  // the city lights start off and download nothing; the lights button (or L) turns them on, and a link carries it
   const lo = await open(375, 812, "#m=g&ll=40,10&z=1.2&l=-&s=1"), loa = lo.win.aeolus;
-  await until(() => loa.cities > 1000, 8000); await sleep(800);
+  await sleep(2500);
   const lbtn = lo.$('#layers button[data-l="lights"]');
   const warm = () => {                         // bright warm pixels on the globe's own canvas: the city dots
     lo.win.drawGlobe();
@@ -651,23 +652,28 @@ async function faultTests(){
     let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] > 150 && d[i+1] > 120 && d[i] > d[i+2] + 30) n++;
     return n;
   };
-  const before = warm(), nightShown = () => getComputedStyle(lo.$("#nightgl")).display !== "none";
-  const nightWas = nightShown();
-  lbtn.click(); await sleep(400);
-  const after = warm();
-  await until(() => /[#&]n=0\b/.test(lo.win.location.hash), 4000);   // the address catches up every 1.5 s
-  ok(lbtn.getAttribute("aria-pressed") === "false" && !loa.show.lights && before > 200 && after < before * 0.05
-     && !nightShown() && /[#&]n=0\b/.test(lo.win.location.hash),
-     "the lights button turns the city lights off", "dots " + before + " → " + after + ", NASA layer shown " + nightWas + " → " + nightShown() + ", " + lo.win.location.hash);
+  const nightShown = () => getComputedStyle(lo.$("#nightgl")).display !== "none";
+  const off0 = warm();
+  ok(!loa.show.lights && lbtn.getAttribute("aria-pressed") === "false" && loa.citySource === "built-in" && loa.nightSource === "dots"
+     && !lo.$("#nightgl").classList.contains("ready") && off0 < 50,
+     "city lights start off and download nothing", "lights " + loa.show.lights + ", cities " + loa.citySource + ", night " + loa.nightSource + ", dots " + off0);
+  lbtn.click();
+  await until(() => loa.citySource === "Natural Earth" && loa.nightSource === "Black Marble", 10000); await sleep(400);
+  const on = warm();
+  await until(() => /[#&]n=1\b/.test(lo.win.location.hash), 4000);   // the address catches up every 1.5 s
+  ok(lbtn.getAttribute("aria-pressed") === "true" && loa.show.lights && on > 100 && nightShown() && loa.nightSource === "Black Marble"
+     && /[#&]n=1\b/.test(lo.win.location.hash),
+     "the lights button turns the city lights on", "dots " + off0 + " → " + on + ", NASA " + loa.nightSource + " shown " + nightShown() + ", " + lo.win.location.hash);
   lo.doc.body.dispatchEvent(new lo.win.KeyboardEvent("keydown", { key: "l", bubbles: true })); await sleep(400);
-  await until(() => !/n=0/.test(lo.win.location.hash), 4000);
-  ok(loa.show.lights && warm() > before * 0.5 && !/n=0/.test(lo.win.location.hash), "L turns them back on", loa.show.lights + ", " + lo.win.location.hash);
+  await until(() => !/n=1/.test(lo.win.location.hash), 4000);
+  const off1 = warm();
+  ok(!loa.show.lights && off1 < on * 0.05 && !nightShown() && !/n=1/.test(lo.win.location.hash), "L turns them off again", "dots " + off1 + ", NASA shown " + nightShown() + ", " + lo.win.location.hash);
   lo.win.location.hash = "#m=f&ll=40,10&z=4&l=w"; await sleep(500);
   ok(getComputedStyle(lbtn).display === "none", "the lights button shows only on the globe", getComputedStyle(lbtn).display);
-  const lo2 = await open(375, 812, "#m=g&ll=40,10&z=1.2&l=w&n=0"), lo2a = lo2.win.aeolus;
+  const lo2 = await open(375, 812, "#m=g&ll=40,10&z=1.2&l=w&n=1"), lo2a = lo2.win.aeolus;
   await sleep(800);
-  ok(!lo2a.show.lights && lo2.doc.body.classList.contains("nolights") && lo2.$('#layers button[data-l="lights"]').getAttribute("aria-pressed") === "false",
-     "a link with n=0 opens with the lights off", JSON.stringify(lo2a.show));
+  ok(lo2a.show.lights && !lo2.doc.body.classList.contains("nolights") && lo2.$('#layers button[data-l="lights"]').getAttribute("aria-pressed") === "true",
+     "a link with n=1 opens with the lights on", JSON.stringify(lo2a.show));
   await forgetForecasts();
 }
 

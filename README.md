@@ -8,10 +8,10 @@ A live picture of the wind, temperature and rain across the world, drawn on a ni
 
 ## What it does
 
-- **Night globe.** Wind streamlines wrap a slowly turning Earth with coastlines and city lights. Drag to turn it, scroll or pinch to zoom, click any point for its weather.
+- **Night globe.** Wind streamlines wrap a slowly turning Earth with coastlines, and city lights if you want them. Drag to turn it, scroll or pinch to zoom, click any point for its weather.
 - **Flat map.** The same wind over a dark basemap, for zooming in on a region.
 - **Three layers.** Wind, temperature and rain, on their own or together.
-- **City lights.** On the globe, the lights button (or `L`) hides the city lights for a clean view of the weather.
+- **City lights.** On the globe, the lights button (or `L`) shows the lights of more than 7,000 cities and towns. They start off, for a clean view of the weather, and download only when you turn them on.
 - **Time.** Play up to three days of forecast forward, scrub with the slider, or jump back to now.
 - **Silk.** A long-exposure mode where the wind paints itself into ribbons.
 - **Cinema.** The interface disappears and the forecast plays. It keeps a frame every two forecast hours.
