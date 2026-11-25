@@ -2631,11 +2631,16 @@ function foreignError(e){
   if (INJECTED.test(st) || foreignStack(st)) return true;
   try{ return new URL(e.filename).origin !== location.origin; }catch{ return true; }
 }
+/* the alarm is for a start-up that broke: once Aeolus's own start-up has run, a later error (most often from a
+   script the browser or a wallet adds, e.g. "window.ethereum…") is only logged, never shown */
+let startedUp = false;
 addEventListener("error", e=>{
+  if (startedUp){ console.warn("error after start-up, not shown:", e.message, e.filename || ""); return; }
   if (foreignError(e)){ console.warn("ignored an error from outside Aeolus:", e.message, e.filename || ""); return; }
   startupProblem("Aeolus hit a problem starting: "+(e.message||"unknown error"));
 });
 addEventListener("unhandledrejection", e=>{
+  if (startedUp){ console.warn("failure after start-up, not shown:", e.reason && e.reason.message); return; }
   const st = e.reason && typeof e.reason.stack === "string" ? e.reason.stack : "";
   const m = (e.reason && e.reason.message) || String(e.reason || "");
   if (foreignStack(st) || INJECTED.test(st) || INJECTED.test(m)){ console.warn("ignored a failure from outside Aeolus:", e.reason && e.reason.message); return; }
@@ -2857,6 +2862,7 @@ window.aeolus = {
   tempCubic, tempGradient, TEMP_STOPS, globeLayerImage: goff, rainSmooth, rainShown, rainColor, rainGradient, RAIN_STOPS,
   get cities(){ return cityXYZB.length / 4; }, get citySource(){ return citySource; }, get nightSource(){ return nightReady ? "Black Marble" : "dots"; },
   pulseAt, PULSE_DEPTH,
+  get startedUp(){ return startedUp; }, testStartingAgain(){ startedUp = false; },   // tests: replay the start-up alarm
   get pointers(){ return pointers.size; }, get frameErrs(){ return frameErrs; }, get cinema(){ return cinema; }, get time(){ return displayTime; },
   get range(){ const f = activeField(); return f ? { t0:f.t0*1000, t1:f.t1*1000 } : null; },
   get lats(){ const a = mode==="globe" ? gparts : parts; let lo = 90, hi = -90; for (const p of a){ if (p.lat<lo) lo=p.lat; if (p.lat>hi) hi=p.lat; } return { lo, hi }; },
@@ -2999,6 +3005,7 @@ setInterval(()=>{                                                       // keep 
   if (document.hidden) return;
   if (mode==="globe") fetchGlobeField(true); else fetchField(true);
 }, 30*60*1000);                                                         // forecasts update hourly at best
+startedUp = true;                                                        // the whole start-up ran without breaking
 </script>
 </body>
 </html>

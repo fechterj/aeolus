@@ -718,6 +718,11 @@ async function linkTests(){
   ok(!/problem starting/.test(q.$("#toast").textContent), "a broken link raises no error", q.$("#toast").textContent.slice(0, 80));
   // a browser's own injected scripts (Firefox on iOS, extensions) fail as a bare "Script error.": not ours, so no alarm
   q.$("#loader").classList.remove("gone");
+  // once started, nothing raises the alarm: a wallet browser's script fails under the page's own address
+  q.win.dispatchEvent(new q.win.ErrorEvent("error", { message: "TypeError: window.ethereumAddress is undefined", filename: q.win.location.href, lineno: 1 }));
+  const quietAfterStart = q.win.aeolus.startedUp && !q.$("#loader").classList.contains("gone") && !/problem starting/.test(q.$("#toast").textContent);
+  ok(quietAfterStart, "after start-up, an error (here a wallet script's) is logged, not shown", q.$("#toast").textContent.slice(0, 80) || "started=" + q.win.aeolus.startedUp);
+  q.win.aeolus.testStartingAgain();                  // replay the start-up alarm for the checks below
   q.win.dispatchEvent(new q.win.ErrorEvent("error", { message: "Script error.", filename: "" }));
   q.win.dispatchEvent(new q.win.ErrorEvent("error", { message: "boom", filename: "moz-extension://abc/inject.js" }));
   const fr = new q.win.Error("injected failed"); fr.stack = "inject@moz-extension://abc/inject.js:3:7";
