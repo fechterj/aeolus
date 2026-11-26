@@ -163,9 +163,31 @@ window.__aeolusTestFetch = (win, realFetch) => {
 const LIMIT_REASON = { minutely: "Minutely API request limit exceeded. Please try again in one minute.",
   hourly: "Hourly API request limit exceeded. Please try again in the next hour.",
   daily: "Daily API request limit exceeded. Please try again tomorrow." };
+/* the site's own hourly forecast file (tools/forecast.mjs), built from the test forecast: "site" serves a fresh one,
+   "siteold" one from four hours ago, "siteonly" a fresh one while Open-Meteo refuses every grid request */
+function siteFile(ageMs){
+  const lats = [], lons = [];
+  for (let r = 0; r < 12; r++) for (let c = 0; c < 24; c++){ lats.push((84 - 168 * r / 11).toFixed(2)); lons.push((-180 + 15 * c).toFixed(2)); }
+  const data = forecastBody(new URLSearchParams({ latitude: lats.join(","), longitude: lons.join(",") }));
+  const time = data[0].hourly.time, n = data.length, nh = time.length, sp = [], di = [], tp = [], pr = [];
+  for (let k = 0; k < nh; k++) for (let j = 0; j < n; j++){
+    const h = data[j].hourly;
+    sp.push(Math.round(h.wind_speed_10m[k] * 10)); di.push(Math.round(h.wind_direction_10m[k]));
+    tp.push(Math.round(h.temperature_2m[k] * 10)); pr.push(Math.round(h.precipitation[k] * 10));
+  }
+  return { v: 1, at: Date.now() - ageMs, cols: 24, rows: 12, lon0: -180, latN: 84, latS: -84, t0: time[0], step: time[1] - time[0], nh, sp, di, tp, pr };
+}
 const serveFor = (win, realFetch) => (input, opts) => {
   const url = String(input && input.url || input);
   let u; try { u = new URL(url, win.location.href); } catch { return realFetch(input, opts); }
+  if (/\/forecast\.json$/.test(u.pathname)){        // never the real file: each test says which one it meets
+    netLog.push({ win, kind: "site", url });
+    const fault = faults.get(win);
+    if ((fault === "site" || fault === "siteonly" || fault === "siteold") && seed)
+      return new Promise(res => setTimeout(() => res(new win.Response(JSON.stringify(siteFile(fault === "siteold" ? 4 * 3600e3 : 600e3)),
+        { status: 200, headers: { "Content-Type": "application/json" } })), 15));
+    return Promise.resolve(new win.Response("missing", { status: 404 }));
+  }
   const reply = body => new Promise((res, rej) => setTimeout(() => {
     if (!win.Response){ rej(new Error("frame closed")); return; }   // the frame was removed while this was pending
     if (opts && opts.signal && opts.signal.aborted){ rej(new win.DOMException("aborted", "AbortError")); return; }
@@ -176,6 +198,8 @@ const serveFor = (win, realFetch) => (input, opts) => {
     netLog.push({ win, kind, url });
     const fault = faults.get(win);
     const serviceFault = fault === "broken" || (fault && LIMIT_REASON[fault] !== undefined);   // not nocities/nonight
+    if (fault === "siteonly" && kind === "grid")
+      return new Promise(res => setTimeout(() => res(new win.Response("unavailable", { status: 503 })), 15));
     if (serviceFault && kind === "grid"){
       if (fault === "broken") return reply([{ latitude: 0, longitude: 0, hourly: { time: [1] } }]);   // a short, half-empty answer
       return new Promise(res => setTimeout(() => res(new win.Response(JSON.stringify({ error: true, reason: LIMIT_REASON[fault] }),
@@ -567,6 +591,29 @@ async function faultTests(){
   p = await open(375, 812, "", "hourly"); a = p.win.aeolus;
   await until(() => a.ready, 6000);
   ok(a.ready && /last forecast/.test(toast(p)), "hourly limit with a saved forecast: shows it and says so", toast(p).slice(0, 110) || "no message");
+
+  // the site's own forecast file: the globe needs no request to Open-Meteo
+  const sites = p => netLog.filter(n => n.win === p.win && n.kind === "site").length;
+  await forgetForecasts();
+  p = await open(375, 812, "", "site"); a = p.win.aeolus;
+  await until(() => a.ready, 6000);
+  ok(a.ready && a.mode === "globe" && grids(p) === 0 && sites(p) === 1, "the globe loads from the site's own forecast file, asking Open-Meteo nothing",
+     (a.ready ? "ready" : "not ready") + ", " + sites(p) + " site, " + grids(p) + " Open-Meteo requests");
+  // an old file is passed over for the live service
+  await forgetForecasts();
+  p = await open(375, 812, "", "siteold"); a = p.win.aeolus;
+  await until(() => a.ready, 6000);
+  ok(a.ready && grids(p) === 1, "a forecast file more than 3 hours old is passed over for Open-Meteo", grids(p) + " Open-Meteo requests");
+  // Open-Meteo out of reach: the flat map shows the world grid at once and keeps it, without an error
+  await forgetForecasts();
+  p = await open(375, 812, "", "siteonly"); a = p.win.aeolus;
+  await until(() => a.ready, 6000);
+  key(p.win, "g");
+  const flatAtOnce = a.mode === "flat" && a.ready;
+  await sleep(4000);                                 // the detailed request, its retry 2.5 s later, both refused
+  ok(flatAtOnce && a.ready && grids(p) >= 2 && !/Couldn/.test(toast(p)),
+     "with Open-Meteo out of reach, the flat map shows the world forecast at once and keeps it, without an error",
+     (flatAtOnce ? "shown at once" : "not at once") + ", " + grids(p) + " refused, toast: " + (toast(p).slice(0, 60) || "none"));
 
   // a broken answer, then Retry once the service is back
   await forgetForecasts();

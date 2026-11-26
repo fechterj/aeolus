@@ -739,8 +739,25 @@ function scheduleField(delay=450){
   clearTimeout(fieldTimer);
   fieldTimer = setTimeout(()=>{ if (!fieldCoversView()) fetchField(); }, delay);
 }
+/* the flat map can show the globe's world grid at once, while (or if not) its detailed one arrives */
+let regionalFailedAt = 0;
+function flatFromGlobe(g){
+  const C = g.cols+1, n = C*g.rows;                     // repeat the first column at +180 so the flat grid closes
+  const hours = g.hours.map(h=>{
+    const o = { t:h.t, u:new Float32Array(n), v:new Float32Array(n), tp:new Float32Array(n), pr:new Float32Array(n) };
+    for (let r=0;r<g.rows;r++) for (let c=0;c<C;c++){
+      const s = r*g.cols + (c % g.cols), d = r*C + c;
+      o.u[d] = h.u[s]; o.v[d] = h.v[s]; o.tp[d] = h.tp[s]; o.pr[d] = h.pr[s];
+    }
+    return o;
+  });
+  return { lon0:-180, span:360, latN:g.latN, latS:g.latS, cols:C, rows:g.rows, hours,
+           t0:g.t0, t1:g.t1, viewZoom:view.zoom, at:g.at, coarse:true };
+}
 /* reuse the fetched field while the view stays inside its (padded) coverage */
 function fieldCoversView(){
+  // the world grid stands in until a detailed one arrives; after a failed try, it stays for 10 minutes
+  if (field && field.coarse) return Date.now()-regionalFailedAt < 10*60*1000;
   if (!field || Math.abs(view.zoom - field.viewZoom) > 0.75) return false;
   const b = viewBounds();
   const shift = Math.round((view.lon - (field.lon0+field.span/2))/360)*360;
@@ -851,6 +868,12 @@ async function fetchField(force, retried){
     if (e.name === "AbortError") return;
     if (seq !== fieldSeq) return;
     if (!retried){ setTimeout(()=>{ if (seq === fieldSeq) fetchField(true, true); }, 2500); return; }   // once more first
+    regionalFailedAt = Date.now();
+    if (!field || field.coarse){                     // no detail for this view: the world grid is better than nothing
+      const g = gfield || await siteForecast().catch(()=>null);
+      if (seq !== fieldSeq) return;
+      if (g){ if (!field) applyField(flatFromGlobe(g)); hideToast(); return; }
+    }
     $("#loader").classList.add("gone");
     if (!field) await flatFromCache(seq, FIELD_STALE);
     if (seq !== fieldSeq) return;
@@ -2128,9 +2151,45 @@ async function globeFromCache(seq, maxAge){
   applyGlobeField(c.field);
   return true;
 }
+/* the site publishes the globe's forecast hourly as forecast.json (tools/forecast.mjs, run by a GitHub job).
+   Reading it from this site first means one request to Open-Meteo an hour instead of one per visitor, and it
+   gets through where a browser's privacy settings stall requests to other sites (Safari on some iPhones). */
+const SITE_FORECAST_MAX_AGE = 3*3600*1000;
+function fieldFromSite(d){
+  const n = d ? d.cols*d.rows : 0, len = n*(d && d.nh);
+  if (!d || d.v !== 1 || d.cols !== 24 || d.rows !== 12 || !(d.nh > 1) || !(d.step > 0)
+      || ![d.sp, d.di, d.tp, d.pr].every(a => Array.isArray(a) && a.length === len)) throw new Error("bad site forecast");
+  const hours = [];
+  for (let k=0;k<d.nh;k++){
+    const o = { t:d.t0+k*d.step, u:new Float32Array(n), v:new Float32Array(n), tp:new Float32Array(n), pr:new Float32Array(n) };
+    for (let j=0;j<n;j++){
+      const i = k*n+j, sp = d.sp[i]/10, a = d.di[i]*D2R;
+      o.u[j] = -sp*Math.sin(a); o.v[j] = -sp*Math.cos(a); o.tp[j] = d.tp[i]/10; o.pr[j] = d.pr[i]/10;
+    }
+    hours.push(o);
+  }
+  return { lon0:-180, span:360, latN:d.latN, latS:d.latS, cols:d.cols, rows:d.rows, hours,
+           t0:d.t0, t1:d.t0+d.step*(d.nh-1), at:d.at };
+}
+/* null when the file is missing, old or unreadable; an abort by a newer request still throws */
+async function siteForecast(signal){
+  try{
+    const res = await fetchT("forecast.json?h="+Math.floor(Date.now()/3600e3), signal ? {signal} : {}, 15000);
+    if (!res.ok) return null;
+    const f = fieldFromSite(await res.json());
+    return (Date.now()-f.at < SITE_FORECAST_MAX_AGE && f.t1*1000 > Date.now()) ? f : null;
+  }catch(e){ if (e.name === "AbortError") throw e; return null; }
+}
 async function fetchGlobeField(force, retried){
   if (Date.now() < dataBlockedUntil){
-    if (!gfield && await globeFromCache(++gSeq, FIELD_STALE)) hideToast();
+    // no requests to Open-Meteo while blocked, but this site's own copy is fine
+    const seq0 = ++gSeq;
+    if (!gfield || isStale(gfield)){
+      const sf = await siteForecast().catch(()=>null);
+      if (seq0 !== gSeq) return;
+      if (sf){ applyGlobeField(sf); hideToast(); cachePut("globe", sf); return; }
+    }
+    if (!gfield && await globeFromCache(seq0, FIELD_STALE)) hideToast();
     return;
   }
   const seq=++gSeq;
@@ -2139,6 +2198,12 @@ async function fetchGlobeField(force, retried){
   if (!force){
     if (await globeFromCache(seq, FIELD_TTL)){ hideToast(); return; }
     if (seq!==gSeq) return;
+  }
+  if (!retried){
+    let sf = null;
+    try{ sf = await siteForecast(gAbort.signal); }catch{ return; }   // a newer request took over
+    if (seq!==gSeq) return;
+    if (sf){ applyGlobeField(sf); hideToast(); cachePut("globe", sf); return; }
   }
   const cols=24, rows=12, lats=[], lons=[];
   for (let r=0;r<rows;r++){
@@ -2333,7 +2398,8 @@ function setMode(m){
   } else {
     view.lon = gview.lon0; view.lat = clamp(gview.lat0,-85,85);   // and back: the map opens where the globe was pointing
     onViewChanged(false); initParticles();
-    if (field && isStale(field)) fetchField(true); else scheduleField(100);
+    if (!field && gfield) applyField(flatFromGlobe(gfield));       // the world grid at once; the detail follows
+    if (field && !field.coarse && isStale(field)) fetchField(true); else scheduleField(100);
   }
   const af = activeField();
   if (af) displayTime = clamp(displayTime, af.t0*1000, af.t1*1000);
