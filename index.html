@@ -2154,7 +2154,9 @@ async function globeFromCache(seq, maxAge){
 /* the site publishes the globe's forecast hourly as forecast.json (tools/forecast.mjs, run by a GitHub job).
    Reading it from this site first means one request to Open-Meteo an hour instead of one per visitor, and it
    gets through where a browser's privacy settings stall requests to other sites (Safari on some iPhones). */
-const SITE_FORECAST_MAX_AGE = 3*3600*1000;
+/* GitHub runs the "hourly" job when it can: hours apart at busy times. A file up to a day old is shown at once;
+   past 3 hours Open-Meteo is asked as well, and where it cannot be reached the file's forecast simply stays */
+const SITE_FORECAST_FRESH = 3*3600*1000, SITE_FORECAST_USABLE = 24*3600*1000;
 function fieldFromSite(d){
   const n = d ? d.cols*d.rows : 0, len = n*(d && d.nh);
   if (!d || d.v !== 1 || d.cols !== 24 || d.rows !== 12 || !(d.nh > 1) || !(d.step > 0)
@@ -2169,7 +2171,7 @@ function fieldFromSite(d){
     hours.push(o);
   }
   return { lon0:-180, span:360, latN:d.latN, latS:d.latS, cols:d.cols, rows:d.rows, hours,
-           t0:d.t0, t1:d.t0+d.step*(d.nh-1), at:d.at };
+           t0:d.t0, t1:d.t0+d.step*(d.nh-1), at:d.at, site:true };
 }
 /* null when the file is missing, old or unreadable; an abort by a newer request still throws */
 async function siteForecast(signal){
@@ -2177,7 +2179,7 @@ async function siteForecast(signal){
     const res = await fetchT("forecast.json?h="+Math.floor(Date.now()/3600e3), signal ? {signal} : {}, 15000);
     if (!res.ok) return null;
     const f = fieldFromSite(await res.json());
-    return (Date.now()-f.at < SITE_FORECAST_MAX_AGE && f.t1*1000 > Date.now()) ? f : null;
+    return (Date.now()-f.at < SITE_FORECAST_USABLE && f.t1*1000 > Date.now()) ? f : null;
   }catch(e){ if (e.name === "AbortError") throw e; return null; }
 }
 async function fetchGlobeField(force, retried){
@@ -2203,7 +2205,11 @@ async function fetchGlobeField(force, retried){
     let sf = null;
     try{ sf = await siteForecast(gAbort.signal); }catch{ return; }   // a newer request took over
     if (seq!==gSeq) return;
-    if (sf){ applyGlobeField(sf); hideToast(); cachePut("globe", sf); return; }
+    if (sf){
+      applyGlobeField(sf); hideToast(); cachePut("globe", sf);
+      if (Date.now()-sf.at < SITE_FORECAST_FRESH) return;
+      // older: keep showing it and ask Open-Meteo for a fresher one behind it
+    }
   }
   const cols=24, rows=12, lats=[], lons=[];
   for (let r=0;r<rows;r++){
@@ -2254,6 +2260,7 @@ async function fetchGlobeField(force, retried){
     if (seq!==gSeq) return;
     // a phone on a weak signal often drops the first try: ask once more before saying so
     if (!retried){ setTimeout(()=>{ if (seq===gSeq) fetchGlobeField(true, true); }, 2500); return; }
+    if (gfield && gfield.site) return;               // the site's own forecast is showing: no need to say more
     $("#loader").classList.add("gone");
     if (!gfield) await globeFromCache(seq, FIELD_STALE);
     if (seq!==gSeq) return;
