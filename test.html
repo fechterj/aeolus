@@ -260,7 +260,7 @@ async function unitTests(p){
   ok(a.fieldUsable({ field: f, saved: now - 2e6 }, 1e6) === false, "cache: an old forecast is refused");
   ok(a.fieldUsable({ field: { hours: [1, 2, 3], t1: now / 1000 - 10 }, saved: now }, 1e6) === false, "cache: a forecast that ended is refused");
   ok(a.fieldUsable(null, 1e6) === false && a.fieldUsable({ saved: now }, 1e6) === false, "cache: junk is refused");
-  const lb = p.$('#layers button[data-l="lights"]'); if (!a.show.lights) lb.click();   // lights start off; the city list loads when they turn on
+  const lb = p.$('#layers button[data-l="lights"]'); if (!a.show.lights) lb.click();   // lights start on; this only guards a link that turned them off
   await until(() => a.citySource === "Natural Earth", 6000);
   ok(a.cities >= 7000 && a.citySource === "Natural Earth", "the full list of cities and towns loads", a.cities + " from " + a.citySource);
   // the light pulse: a smooth pattern over the sphere, never flicker
@@ -695,9 +695,8 @@ async function faultTests(){
     ok(gone && back, "NASA lights come back after the graphics context is lost", (gone ? "lost, " : "never lost, ") + nba.nightSource);
   }
 
-  // the city lights start off and download nothing; the lights button (or L) turns them on, and a link carries it
+  // the city lights start on; L (or the lights button) turns them off and back on, and a link carries "off"
   const lo = await open(375, 812, "#m=g&ll=40,10&z=1.2&l=-&s=1"), loa = lo.win.aeolus;
-  await sleep(2500);
   const lbtn = lo.$('#layers button[data-l="lights"]');
   const warm = () => {                         // bright warm pixels on the globe's own canvas: the city dots
     lo.win.drawGlobe();
@@ -706,27 +705,26 @@ async function faultTests(){
     return n;
   };
   const nightShown = () => getComputedStyle(lo.$("#nightgl")).display !== "none";
-  const off0 = warm();
-  ok(!loa.show.lights && lbtn.getAttribute("aria-pressed") === "false" && loa.citySource === "built-in" && loa.nightSource === "dots"
-     && !lo.$("#nightgl").classList.contains("ready") && off0 < 50,
-     "city lights start off and download nothing", "lights " + loa.show.lights + ", cities " + loa.citySource + ", night " + loa.nightSource + ", dots " + off0);
-  lbtn.click();
   await until(() => loa.citySource === "Natural Earth" && loa.nightSource === "Black Marble", 10000); await sleep(400);
-  const on = warm();
-  await until(() => /[#&]n=1\b/.test(lo.win.location.hash), 4000);   // the address catches up every 1.5 s
-  ok(lbtn.getAttribute("aria-pressed") === "true" && loa.show.lights && on > 100 && nightShown() && loa.nightSource === "Black Marble"
-     && /[#&]n=1\b/.test(lo.win.location.hash),
-     "the lights button turns the city lights on", "dots " + off0 + " → " + on + ", NASA " + loa.nightSource + " shown " + nightShown() + ", " + lo.win.location.hash);
+  const on0 = warm();
+  ok(loa.show.lights && lbtn.getAttribute("aria-pressed") === "true" && on0 > 100 && nightShown() && !/[#&]n=/.test(lo.win.location.hash),
+     "city lights start on, with the city list and NASA's lights", "lights " + loa.show.lights + ", cities " + loa.citySource + ", night " + loa.nightSource + ", dots " + on0);
   lo.doc.body.dispatchEvent(new lo.win.KeyboardEvent("keydown", { key: "l", bubbles: true })); await sleep(400);
-  await until(() => !/n=1/.test(lo.win.location.hash), 4000);
-  const off1 = warm();
-  ok(!loa.show.lights && off1 < on * 0.05 && !nightShown() && !/n=1/.test(lo.win.location.hash), "L turns them off again", "dots " + off1 + ", NASA shown " + nightShown() + ", " + lo.win.location.hash);
+  await until(() => /[#&]n=0\b/.test(lo.win.location.hash), 4000);   // the address catches up every 1.5 s
+  const off = warm();
+  ok(!loa.show.lights && lbtn.getAttribute("aria-pressed") === "false" && off < on0 * 0.05 && !nightShown() && /[#&]n=0\b/.test(lo.win.location.hash),
+     "L turns the city lights off, and the link says so", "dots " + on0 + " → " + off + ", NASA shown " + nightShown() + ", " + lo.win.location.hash);
+  lbtn.click(); await sleep(400);
+  await until(() => !/[#&]n=/.test(lo.win.location.hash), 4000);
+  const on1 = warm();
+  ok(loa.show.lights && on1 > 100 && nightShown() && !/[#&]n=/.test(lo.win.location.hash), "the lights button turns them back on", "dots " + on1 + ", NASA shown " + nightShown() + ", " + lo.win.location.hash);
   lo.win.location.hash = "#m=f&ll=40,10&z=4&l=w"; await sleep(500);
   ok(getComputedStyle(lbtn).display === "none", "the lights button shows only on the globe", getComputedStyle(lbtn).display);
-  const lo2 = await open(375, 812, "#m=g&ll=40,10&z=1.2&l=w&n=1"), lo2a = lo2.win.aeolus;
+  const lo2 = await open(375, 812, "#m=g&ll=40,10&z=1.2&l=w&n=0"), lo2a = lo2.win.aeolus;
   await sleep(800);
-  ok(lo2a.show.lights && !lo2.doc.body.classList.contains("nolights") && lo2.$('#layers button[data-l="lights"]').getAttribute("aria-pressed") === "true",
-     "a link with n=1 opens with the lights on", JSON.stringify(lo2a.show));
+  ok(!lo2a.show.lights && lo2.doc.body.classList.contains("nolights") && lo2.$('#layers button[data-l="lights"]').getAttribute("aria-pressed") === "false"
+     && lo2a.citySource === "built-in" && lo2a.nightSource === "dots",
+     "a link with n=0 opens with the lights off, downloading nothing for them", JSON.stringify(lo2a.show) + ", " + lo2a.citySource + ", " + lo2a.nightSource);
   await forgetForecasts();
 }
 

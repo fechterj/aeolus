@@ -332,7 +332,7 @@
   #toast{overflow-wrap:anywhere}
 </style>
 </head>
-<body class="nolights">
+<body>
 <canvas id="map" role="img" aria-label="Live map of the wind across the world. Arrow keys move it, plus and minus zoom, Enter shows the weather at the centre."></canvas>
 <canvas id="layer" aria-hidden="true"></canvas>
 <canvas id="fx" aria-hidden="true"></canvas>
@@ -355,7 +355,7 @@
       <button data-l="wind" class="on" aria-pressed="true"><i style="background:#6ee7ff;color:#6ee7ff"></i>wind</button>
       <button data-l="temp" aria-pressed="false"><i style="background:#e8b83a;color:#e8b83a"></i>temp</button>
       <button data-l="rain" aria-pressed="false"><i style="background:#5f9dff;color:#5f9dff"></i>rain</button>
-      <button data-l="lights" aria-pressed="false" title="City lights on the globe (L)" aria-label="City lights"><i style="background:#ffe2b4;color:#ffe2b4"></i>lights</button>
+      <button data-l="lights" aria-pressed="true" title="City lights on the globe (L)" aria-label="City lights"><i style="background:#ffe2b4;color:#ffe2b4"></i>lights</button>
     </div>
     <div id="xp" class="glass">
       <button id="silkbtn" title="Long-exposure paint mode (S)" aria-label="Silk, long-exposure mode" aria-pressed="false"><i style="background:#f0faff;color:#f0faff"></i>silk</button>
@@ -456,7 +456,7 @@
       <li><b>Slider</b> scrubs up to 3 days of forecast · <b>NOW</b> returns to the present</li>
       <li><b>Layers</b> — toggle wind streamlines, the temperature field and live rain</li>
       <li><b>Silk</b> — long-exposure mode: the wind paints itself into ribbons of light</li>
-      <li><b>Cinema</b> — everything disappears and the atmosphere performs · <b>Capture</b> saves it as a poster</li>      <li><b>Globe</b> (G) — the same wind, temperature and rain wrapping a turning night Earth, with the lights of more than 7,000 cities and towns (off to start: <b>lights</b> or L shows them)</li>
+      <li><b>Cinema</b> — everything disappears and the atmosphere performs · <b>Capture</b> saves it as a poster</li>      <li><b>Globe</b> (G) — the same wind, temperature and rain wrapping a turning night Earth, with the lights of more than 7,000 cities and towns (<b>lights</b> or L turns them off)</li>
       <li><b>Gallery</b> — every sky you capture is kept on this device; cinema collects them as it plays</li>
       <li><b>Search</b> flies to any place on Earth</li>
       <li><b>Share</b> — a link that opens this exact view: place, zoom, layers, time and the point you opened. The address bar keeps up as you move</li>
@@ -605,7 +605,7 @@ let displayTime = Date.now();  // ms, the moment being shown
 let playing = false;
 let mapDirty = true;
 let layerDirty = true;
-const show = { wind:true, temp:false, rain:false, lights:false };   // city lights start off: a clean view of the weather
+const show = { wind:true, temp:false, rain:false, lights:true };
 let silk = false, cinema = false, preCinema = null;
 let autoBucket = null, autoCount = 0;
 let marker = null;             // {lon,lat} of clicked point
@@ -2953,7 +2953,7 @@ function formatLink(st){
   const r = (v, d) => +(+v).toFixed(d);           // round here too: wrapping a longitude leaves float dust (143.65000000000003)
   const parts = ["m="+st.m, "ll="+st.ll.map(v=>r(v,2)).join(","), "z="+r(st.z,2), "l="+(st.l||"-")];
   if (st.s) parts.push("s=1");
-  if (st.n) parts.push("n=1");                    // lights are off unless a link turns them on
+  if (st.n === false) parts.push("n=0");          // lights are on unless a link turns them off
   if (st.t != null) parts.push("t="+new Date(st.t).toISOString().slice(0,16)+"Z");
   if (st.p) parts.push("p="+st.p.map(v=>r(v,3)).join(","));
   return "#"+parts.join("&");
@@ -2988,7 +2988,7 @@ function applyLink(st, opts={}){
   if (!st || !Object.keys(st).length) return false;
   if (!opts.initial){ if (cinema) setCinema(false); setPlaying(false); }   // a link shows a moment: hold still on it
   if (st.l !== undefined) for (const k of ["wind","temp","rain"]) setLayer(k, st.l.includes(k[0]));
-  if (st.l !== undefined || st.n !== undefined) setLayer("lights", st.n === true);
+  if (st.l !== undefined || st.n !== undefined) setLayer("lights", st.n !== false);
   if (!cinema && !!st.s !== silk) setSilk(!!st.s);
   const target = st.m==="f" ? "flat" : st.m==="g" ? "globe" : mode;
   if (st.ll){ view.lat = st.ll[0]; view.lon = st.ll[1]; gview.lat0 = st.ll[0]; gview.lon0 = st.ll[1]; userMovedAt = Date.now(); }
@@ -3062,6 +3062,7 @@ if (startLink.m === "f"){                      // a link to the flat map: start 
   applyLink(startLink, { initial:true });
   fetchField();
 } else {
+  if (startLink.n === false) setLayer("lights", false);   // a link with the lights off downloads nothing for them
   setMode("globe");            // open on the night globe; the flat map's wind loads when you switch to it
   applyLink(startLink, { initial:true });
 }
